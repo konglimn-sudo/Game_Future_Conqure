@@ -1,0 +1,9 @@
+# Godot 导入缓存与编辑器状态
+game/.godot/
+
+# 500m 四季高清瓦片（约 875MB，用 tools/fetch_500m.sh 重建）
+game/assets/earth_hd2/
+
+# 系统杂项
+.DS_Store
+*.tmp
