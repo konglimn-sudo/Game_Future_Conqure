@@ -66,10 +66,12 @@ func _init() -> void:
 			if e.begins_with("💾"):
 				saw_data_short = true
 
-		# 不变量
-		if sim.chips < -0.001: fails.append("T%d 芯片为负" % t)
-		if sim.data_pool < -0.001: fails.append("T%d 数据为负" % t)
-		if sim.compute_total() <= 0: fails.append("T%d 算力归零" % t)
+		# 不变量（含 AI 势力）
+		for fid in range(sim.factions.size()):
+			var f: Dictionary = sim.factions[fid]
+			if float(f["chips"]) < -0.001: fails.append("T%d 势力%d 芯片为负" % [t, fid])
+			if float(f["data_pool"]) < -0.001: fails.append("T%d 势力%d 数据为负" % [t, fid])
+			if sim.compute_total(fid) <= 0: fails.append("T%d 势力%d 算力归零" % [t, fid])
 		if absf(sim.train_pct + sim.infer_pct + sim.research_pct() - 1.0) > 0.001:
 			fails.append("T%d 分配比例不归一" % t)
 
@@ -78,6 +80,9 @@ func _init() -> void:
 	if sim.controlled().size() < 6: fails.append("扩张停滞（<6 区域）")
 	if not saw_power_wall: fails.append("全程未见电力墙（M0 核心机制未触发）")
 	if sim.army_total() < 1: fails.append("军团系统未生效")
+	for fid in range(1, sim.factions.size()):
+		if sim.controlled_of(fid).size() < 5:
+			fails.append("AI〔%s〕扩张停滞（%d 区）" % [sim.faction_name(fid), sim.controlled_of(fid).size()])
 
 	print("\n==== 结果 ====")
 	print("代际 Gen%d | 控制 %d 区 | 科技 Lv%d | 电力墙:%s 数据短缺:%s" % [

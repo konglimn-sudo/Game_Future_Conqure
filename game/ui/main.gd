@@ -6,6 +6,13 @@ const COL_OWNED := Color(0.16, 0.42, 0.78)
 const COL_TOUCH := Color(0.17, 0.34, 0.42)
 const COL_BORDER := Color(0.05, 0.06, 0.09, 0.9)
 
+# 势力主色：0=玩家（皇家蓝）、1=美利坚体系（青）、2=北方集团（绯红）
+const FACTION_COLORS := {
+	0: Color(0.16, 0.42, 0.78),
+	1: Color(0.10, 0.46, 0.46),
+	2: Color(0.64, 0.17, 0.15),
+}
+
 # 政治地图配色：主要国家钉死色（自制暗色系），其余按国家码散列取色
 const COUNTRY_COLORS := {
 	"USA": Color(0.30, 0.37, 0.49), "RUS": Color(0.47, 0.27, 0.24),
@@ -148,7 +155,8 @@ func _ready() -> void:
 		await get_tree().create_timer(2.5).timeout
 		get_viewport().get_texture().get_image().save_png(snap_path)
 		get_tree().quit()
-	_log("[b]M1 经济沙盒 · 现代世界[/b] —— 时间以月流动；各国资源会变迁、中立国会自建基建（占领时继承）、放任的影响力会消退。")
+	_log("[b]M3 大国竞逐[/b] —— 🟦 你（京津冀）｜ [color=#2aa]🟩 美利坚体系[/color] ｜ [color=#e54]🟥 北方集团[/color] 正在与你争夺中立世界。")
+	_log("时间以月流动；各国资源会变迁、中立国会自建基建（占领时继承）、放任的影响力会消退；中立区先到 60 影响度者得。")
 	_log("左键拖动/点击选国 ｜ 双指或滚轮缩放 ｜ WASD 平移 ｜ 空格=继续/暂停 ｜ 1~4=速度 ｜ 回车=单步 ｜ M=卫星/政治图层 ｜ F5/F9=存/读档")
 	_log("🛡 军团：控制区内组建（吃推理算力维护），「调动军团」后点击相邻控制区移防——战斗系统在 M2 到来")
 	_log("[color=#fc6]目标：控制 45 区、拿下高端晶圆厂、算力 200、科技 Lv10。按空格开始。[/color]")
@@ -349,7 +357,7 @@ func _update_label_visibility() -> void:
 	for id in labels:
 		var r := sim.region(id)
 		var active: bool = not sim.is_controlled(r) \
-			and (sim.auto_infiltrate.has(id) or int(r["influence"]) > 0)
+			and (sim.auto_infiltrate.has(id) or sim.influence_of(r, 0) > 0)
 		labels[id].visible = label_score[id] >= need or id == selected or active
 		# 详情条：拉近或选中时显示（军团有独立常显徽章）
 		detail_labels[id].visible = labels[id].visible and (z >= 0.8 or id == selected)
@@ -507,31 +515,42 @@ func _snow01(lat: float, m: int) -> float:
 
 func _map_color(r: Dictionary) -> Color:
 	var id := int(r["id"])
-	var inf := int(r["influence"])
+	var owner := sim.owner_of(r)
 	var base := _country_color(str(r.get("key", "?")))
 	var col: Color
-	if sim.is_controlled(r):
-		col = COL_OWNED.lerp(Color(0.3, 0.62, 1.0), (inf - 60) / 40.0)
-	elif inf > 0:
-		# 渗透中：国家底色被玩家蓝逐渐浸染
-		col = base.lerp(COL_OWNED, 0.15 + 0.55 * inf / 60.0)
+	if owner == 0:
+		col = COL_OWNED.lerp(Color(0.3, 0.62, 1.0), (sim.influence_of(r, 0) - 60) / 40.0)
+	elif owner > 0:
+		col = FACTION_COLORS.get(owner, Color(0.5, 0.3, 0.5))
 	else:
-		col = base
-		for n in sim.adj[str(id)]:
-			if sim.is_controlled(sim.region(int(n))):
-				col = base.lightened(0.05)
-				break
+		# 中立：被渗透最深的势力颜色浸染（拉锯可视化）
+		var lead := -1
+		var lead_inf := 0
+		for fid in range(sim.factions.size()):
+			var v := sim.influence_of(r, fid)
+			if v > lead_inf:
+				lead_inf = v
+				lead = fid
+		if lead >= 0:
+			col = base.lerp(FACTION_COLORS.get(lead, COL_OWNED), 0.15 + 0.55 * lead_inf / 60.0)
+		else:
+			col = base
+			for n in sim.adj[str(id)]:
+				if sim.is_controlled(sim.region(int(n))):
+					col = base.lightened(0.05)
+					break
 	# 同国相邻省份明度微差，避免粘连
 	var tint := (float((id * 73856093) % 7) - 3.0) * 0.013
 	col = col.lightened(tint) if tint > 0.0 else col.darkened(-tint)
 	if satellite_mode:
 		# 卫星模式：政治色作半透明罩层，露出真彩地表（积雪由影像自带）
-		col.a = 0.52 if sim.is_controlled(r) else (0.38 if inf > 0 else 0.28)
+		var infl_any := owner >= 0 or not (r["inf"] as Dictionary).is_empty()
+		col.a = 0.52 if owner >= 0 else (0.38 if infl_any else 0.28)
 		return col
 	# 季节积雪：高纬区域冬季覆霜（控制区减弱以保辨识度）
 	var snow := _snow01(90.0 - centers[id].y / MAP_SCALE, sim.month_of_year())
 	if snow > 0.0:
-		col = col.lerp(Color(0.82, 0.86, 0.91), snow * (0.32 if sim.is_controlled(r) else 0.48))
+		col = col.lerp(Color(0.82, 0.86, 0.91), snow * (0.32 if owner >= 0 else 0.48))
 	return col
 
 # ---------------- UI ----------------
@@ -985,7 +1004,7 @@ func _refresh_time_controls() -> void:
 
 ## 演化事件在地图上的浮动标记
 func _spawn_evo_marks() -> void:
-	const ICONS := {"up": "📈", "down": "📉", "build": "🏗", "fab": "🏭"}
+	const ICONS := {"up": "📈", "down": "📉", "build": "🏗", "fab": "🏭", "flag": "🚩"}
 	var ms := clampf(1.1 / cam.zoom.x, 0.09, 1.3)
 	for m in sim.evo_marks:
 		var lab := Label.new()
@@ -1069,7 +1088,7 @@ func _refresh() -> void:
 		for poly in polynodes[id]:
 			poly.color = col
 		# 渗透中的区域：标签显示进度与自动标记
-		var inf := int(r["influence"])
+		var inf := sim.influence_of(r, 0)
 		var suffix := ""
 		if not sim.is_controlled(r):
 			if sim.auto_infiltrate.has(id):
@@ -1087,7 +1106,7 @@ func _refresh() -> void:
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
 	var gen_txt := "Gen%d  %d/%s" % [sim.gen, int(sim.training), ("%d" % int(th)) if th > 0 else "MAX"]
 	if th > 0:
-		var rate := sim.compute_total() * sim.train_pct
+		var rate: float = sim.compute_total() * sim.train_pct
 		if rate > 0.5:
 			gen_txt += "（约 %d 回合）" % maxi(1, ceili((th - sim.training) / rate))
 	lbl_top["gen"].text = gen_txt
@@ -1133,7 +1152,19 @@ func _refresh_region() -> void:
 		return
 	var r := sim.region(selected)
 	var star := "★ " if r["capital"] else ""
-	var ctl := "[color=#6cf]已控制[/color]" if sim.is_controlled(r) else "影响度 %d/100" % int(r["influence"])
+	var owner := sim.owner_of(r)
+	var ctl: String
+	if owner == 0:
+		ctl = "[color=#6cf]已控制[/color]"
+	elif owner > 0:
+		ctl = "[color=#f86]〔%s〕控制[/color]" % sim.faction_name(owner)
+	else:
+		var parts := []
+		for fid in range(sim.factions.size()):
+			var v := sim.influence_of(r, fid)
+			if v > 0:
+				parts.append("%s %d" % ["你" if fid == 0 else sim.faction_name(fid), v])
+		ctl = "中立" if parts.is_empty() else "渗透中：" + " ｜ ".join(parts)
 	var t := "[b]%s%s[/b]（%s） %s\n" % [star, r["name"], r["arch"], ctl]
 	t += "人口 %d ｜ 能源 %d ｜ 晶圆厂 %d ｜ 发射场 %d\n" % [int(r["pop"]), int(r["energy"]), int(r["fab"]), int(r["launch"])]
 	t += "设施：电厂 %d/%d ｜ 数据中心 %d/%d ｜ 军团 🛡%d\n" % [int(r["plant"]), int(sim.P["max_plant"]), int(r["dc"]), int(sim.P["max_dc"]), sim.army_of(r)]
