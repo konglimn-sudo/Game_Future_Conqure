@@ -142,6 +142,12 @@ func _ready() -> void:
 	_set_map_mode(true)
 	_update_tod_label()
 	_refresh()
+	# 截图模式：FC_SNAPSHOT=输出路径 时，等渲染稳定后截屏退出（README 配图用）
+	var snap_path := OS.get_environment("FC_SNAPSHOT")
+	if snap_path != "":
+		await get_tree().create_timer(2.5).timeout
+		get_viewport().get_texture().get_image().save_png(snap_path)
+		get_tree().quit()
 	_log("[b]M1 经济沙盒 · 现代世界[/b] —— 时间以月流动；各国资源会变迁、中立国会自建基建（占领时继承）、放任的影响力会消退。")
 	_log("左键拖动/点击选国 ｜ 双指或滚轮缩放 ｜ WASD 平移 ｜ 空格=继续/暂停 ｜ 1~4=速度 ｜ 回车=单步 ｜ M=卫星/政治图层 ｜ F5/F9=存/读档")
 	_log("🛡 军团：控制区内组建（吃推理算力维护），「调动军团」后点击相邻控制区移防——战斗系统在 M2 到来")
