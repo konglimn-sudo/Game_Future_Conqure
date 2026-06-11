@@ -42,5 +42,13 @@
   "influence_decay": 2,
   "influence_decay_grace": 3,
   "army_cost_chips": 15,
-  "army_upkeep": 2
+  "army_upkeep": 2,
+  "threat_region_share": 0.4,
+  "threat_min_regions": 10,
+  "threat_gen_lead": 2,
+  "containment_gain_cut": 0.3,
+  "containment_decay_mult": 2,
+  "containment_focus": 1.8,
+  "deterrence_ratio": 1.5,
+  "deterrence_min_mil": 12.0
 }

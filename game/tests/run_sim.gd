@@ -8,6 +8,7 @@ func _init() -> void:
 	var fails: Array[String] = []
 	var saw_power_wall := false
 	var saw_data_short := false
+	var saw_containment := false
 
 	for t in range(1, 43):
 		# 分配策略：前期均衡，中期冲代际；数据见底时让利给扩张
@@ -65,6 +66,8 @@ func _init() -> void:
 				saw_power_wall = true
 			if e.begins_with("💾"):
 				saw_data_short = true
+			if e.begins_with("🛑"):
+				saw_containment = true
 
 		# 不变量（含 AI 势力）
 		for fid in range(sim.factions.size()):
@@ -83,6 +86,8 @@ func _init() -> void:
 	for fid in range(1, sim.factions.size()):
 		if sim.controlled_of(fid).size() < 5:
 			fails.append("AI〔%s〕扩张停滞（%d 区）" % [sim.faction_name(fid), sim.controlled_of(fid).size()])
+	if not saw_containment:
+		fails.append("42 月内反霸权围堵从未触发（领跑者应被围堵）")
 
 	print("\n==== 结果 ====")
 	print("代际 Gen%d | 控制 %d 区 | 科技 Lv%d | 电力墙:%s 数据短缺:%s" % [

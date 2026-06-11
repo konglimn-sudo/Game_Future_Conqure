@@ -1113,7 +1113,12 @@ func _refresh() -> void:
 	lbl_top["compute"].text = "算力 %.0f%s（电力 %.0f）" % [sim.compute_total(), " ⚡受限" if sim.power_limited() else "", sim.power_total()]
 	lbl_top["chips"].text = "🔶 %.0f（+%.0f/回）" % [sim.chips, sim.chip_rate()]
 	lbl_top["data"].text = "💾 %.0f（+%.0f/回）" % [sim.data_pool, sim.data_rate()]
-	lbl_top["misc"].text = "科技 Lv%d ｜ 经济 %d%% ｜ 推理供给 %d%% ｜ 🛡 %d" % [sim.tech_level(), int(sim.eco_coef() * 100), int(sim.last_supply * 100), sim.army_total()]
+	var stance := ""
+	if sim.contained_fid == 0:
+		stance = " ｜ 🛑 被围堵"
+	elif sim.contained_fid > 0:
+		stance = " ｜ 🛑 围堵〔%s〕" % sim.faction_name(sim.contained_fid)
+	lbl_top["misc"].text = "科技 Lv%d ｜ 经济 %d%% ｜ 推理供给 %d%% ｜ 🛡 %d%s" % [sim.tech_level(), int(sim.eco_coef() * 100), int(sim.last_supply * 100), sim.army_total(), stance]
 	_update_label_visibility()
 	_refresh_alloc()
 	_refresh_region()

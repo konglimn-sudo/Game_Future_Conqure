@@ -15,6 +15,7 @@ static func act(sim, fid: int) -> void:
 	sim.set_allocation(train, infer, fid)
 
 	# 2. 渗透：性价比 ×性格权重，最多 expand 个目标/月
+	var foe: int = sim.contained_fid if sim.contained_fid != fid else -1
 	for _i in range(int(p["expand"])):
 		var best := -1
 		var score := -1.0
@@ -28,6 +29,16 @@ static func act(sim, fid: int) -> void:
 			# 已有投入的目标优先收尾（防止被衰减磨掉）
 			if sim.influence_of(r, fid) > 0:
 				value *= 1.8
+			# 反霸权围堵：抢领跑者正在渗透的目标、堵它的扩张边界
+			if foe >= 0:
+				var blocking: bool = sim.influence_of(r, foe) > 0
+				if not blocking:
+					for n in sim.adj[str(id)]:
+						if sim.is_owned_by(sim.region(int(n)), foe):
+							blocking = true
+							break
+				if blocking:
+					value *= float(sim.P["containment_focus"])
 			var s: float = value / (cost["chips"] + cost["data"] * 0.5)
 			if s > score:
 				score = s

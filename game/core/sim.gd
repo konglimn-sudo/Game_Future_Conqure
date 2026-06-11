@@ -20,6 +20,7 @@ var evo_marks: Array = []         # 地图浮动标记 [{id, kind}]
 var auto_infiltrate := {}         # 玩家自动渗透队列 region_id -> true
 var infiltrated_this_turn := {}   # "fid:rid" -> true
 var last_report := {}             # 玩家结算摘要
+var contained_fid := -1           # 当前被全球围堵的势力（-1 = 无）
 var rng := RandomNumberGenerator.new()
 
 const START_YEAR := 2030
@@ -231,6 +232,64 @@ func army_total(fid: int = 0) -> int:
 		n += army_of(r)
 	return n
 
+## 军力指数：军团规模 × 代际系数（M2 战力公式的雏形）
+func military_index(fid: int) -> float:
+	return army_total(fid) * gen_coef(fid)
+
+# ---------- 反霸权动力学（设计文档 7.5 / 9.4） ----------
+## 领跑者触发全球围堵：渗透增益削减、影响力消退加速、AI 转向堵截。
+## 例外：拥有绝对军事霸权者无人敢围堵——弱霸权遭合纵，强霸权遭追随。
+
+func _update_containment() -> void:
+	# 领跑判定：控制区份额 / 代际领先
+	var total := 0
+	for fid in range(factions.size()):
+		total += controlled_of(fid).size()
+	var leader := -1
+	var leader_n := 0
+	for fid in range(factions.size()):
+		var n := controlled_of(fid).size()
+		if n > leader_n:
+			leader_n = n
+			leader = fid
+	var threat := false
+	if leader >= 0 and leader_n >= int(P["threat_min_regions"]):
+		if total > 0 and float(leader_n) / total >= float(P["threat_region_share"]):
+			threat = true
+		var best_other_gen := 1
+		for fid in range(factions.size()):
+			if fid != leader:
+				best_other_gen = maxi(best_other_gen, int(factions[fid]["gen"]))
+		if int(factions[leader]["gen"]) - best_other_gen >= int(P["threat_gen_lead"]):
+			threat = true
+	# 绝对军事霸权豁免
+	var exempt := false
+	if threat:
+		var others_mil := 0.0
+		for fid in range(factions.size()):
+			if fid != leader:
+				others_mil += military_index(fid)
+		var lm := military_index(leader)
+		exempt = lm >= float(P["deterrence_min_mil"]) \
+			and lm >= float(P["deterrence_ratio"]) * maxf(others_mil, 1.0)
+	var new_contained := leader if (threat and not exempt) else -1
+	if new_contained != contained_fid:
+		if new_contained >= 0:
+			events.append(("🛑 反霸权围堵：你的领跑引发全球警惕（渗透增益下降、影响力消退加速）"
+				if new_contained == 0 else
+				"🛑 反霸权围堵：〔%s〕的扩张引发全球合纵" % faction_name(new_contained)))
+		elif contained_fid >= 0:
+			if threat and exempt:
+				events.append("⚔ 军事威慑：%s的绝对军力令围堵无从组织" %
+					("你" if leader == 0 else "〔%s〕" % faction_name(leader)))
+			else:
+				events.append("🕊 围堵解除：%s不再被视为头号威胁" %
+					("你" if contained_fid == 0 else "〔%s〕" % faction_name(contained_fid)))
+		contained_fid = new_contained
+	elif threat and exempt and contained_fid == -1 and turn % 12 == 0:
+		events.append("⚔ 军事威慑维持中：%s的军力令各方不敢轻举妄动" %
+			("你" if leader == 0 else "〔%s〕" % faction_name(leader)))
+
 # ---------- 指令（fid 默认 0 = 玩家，UI/测试调用方式不变） ----------
 
 func set_allocation(train: float, infer: float, fid: int = 0) -> void:
@@ -276,7 +335,10 @@ func do_infiltrate(id: int, fid: int = 0) -> bool:
 	f["data_pool"] -= cost["data"]
 	var r := region(id)
 	var key := str(fid)
-	r["inf"][key] = mini(100, influence_of(r, fid) + int(P["infiltrate_gain"]))
+	var gain := int(P["infiltrate_gain"])
+	if fid == contained_fid:
+		gain = int(round(gain * (1.0 - float(P["containment_gain_cut"]))))
+	r["inf"][key] = mini(100, influence_of(r, fid) + gain)
 	r["li"][key] = turn
 	infiltrated_this_turn["%d:%d" % [fid, id]] = true
 	if int(r["inf"][key]) >= CTRL:
@@ -391,6 +453,8 @@ func do_move_army(from_id: int, to_id: int, fid: int = 0) -> bool:
 func end_turn() -> void:
 	events.clear()
 	evo_marks.clear()
+	# 0. 反霸权态势更新（AI 决策与渗透增益都依赖它）
+	_update_containment()
 	# 0a. 玩家自动渗透队列
 	for id in auto_infiltrate.keys():
 		if can_infiltrate(int(id), 0) == "":
@@ -513,13 +577,16 @@ func _world_evolution() -> void:
 			events.append("🏭 〔%s〕制程升级 → %d 级，全球高端产能上移%s" %
 				[r["name"], int(r["fab"]), _owner_note(r)])
 			evo_marks.append({"id": int(r["id"]), "kind": "fab"})
-	# 4. 影响力消退（仅中立区域、且超过宽限期未续）
+	# 4. 影响力消退（仅中立区域、且超过宽限期未续；被围堵者加速消退）
 	for r in regions:
 		if owner_of(r) >= 0:
 			continue
 		for k in r["inf"].keys():
 			if turn - int(r["li"].get(k, 0)) >= int(P["influence_decay_grace"]):
-				var v: int = int(r["inf"][k]) - int(P["influence_decay"])
+				var dec: int = int(P["influence_decay"])
+				if int(k) == contained_fid:
+					dec *= int(P["containment_decay_mult"])
+				var v: int = int(r["inf"][k]) - dec
 				if v <= 0:
 					r["inf"].erase(k)
 					if k == "0":
