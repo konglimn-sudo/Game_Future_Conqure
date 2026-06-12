@@ -50,5 +50,6 @@
   "containment_decay_mult": 2,
   "containment_focus": 1.8,
   "deterrence_ratio": 1.5,
-  "deterrence_min_mil": 12.0
+  "deterrence_min_mil": 12.0,
+  "threat_lead_ratio": 1.4
 }

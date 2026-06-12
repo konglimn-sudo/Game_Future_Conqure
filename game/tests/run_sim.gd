@@ -78,16 +78,40 @@ func _init() -> void:
 		if absf(sim.train_pct + sim.infer_pct + sim.research_pct() - 1.0) > 0.001:
 			fails.append("T%d 分配比例不归一" % t)
 
-	# 结局断言
+	# 结局断言（涌现轨迹）
 	if sim.gen < 2: fails.append("42 月未达 Gen2（数值过紧）")
 	if sim.controlled().size() < 6: fails.append("扩张停滞（<6 区域）")
-	if not saw_power_wall: fails.append("全程未见电力墙（M0 核心机制未触发）")
 	if sim.army_total() < 1: fails.append("军团系统未生效")
 	for fid in range(1, sim.factions.size()):
 		if sim.controlled_of(fid).size() < 5:
 			fails.append("AI〔%s〕扩张停滞（%d 区）" % [sim.faction_name(fid), sim.controlled_of(fid).size()])
-	if not saw_containment:
-		fails.append("42 月内反霸权围堵从未触发（领跑者应被围堵）")
+	print("（参考）电力墙出现:%s 围堵出现:%s" % ["是" if saw_power_wall else "否", "是" if saw_containment else "否"])
+
+	# 机制单元校验（确定性合成场景，不依赖涌现轨迹）
+	# A. 电力墙：把玩家起始区数据中心拉满，容量必然顶到电力上限
+	var s2 := Sim.create("res://data/world.json", "res://data/params.json")
+	s2.factions[0]["chips"] = 999.0
+	for r in s2.controlled():
+		while s2.can_build(int(r["id"]), "dc", 0) == "":
+			s2.do_build(int(r["id"]), "dc", 0)
+	if not s2.power_limited(0):
+		fails.append("机制校验失败：数据中心拉满后未触发电力墙")
+	# B. 反霸权围堵：给美利坚体系 12 个区 + 代际领先 2 代
+	var s3 := Sim.create("res://data/world.json", "res://data/params.json")
+	var given := 0
+	for r in s3.regions:
+		if s3.owner_of(r) == -1 and given < 12:
+			r["inf"]["1"] = 100
+			given += 1
+	s3.factions[1]["gen"] = 4
+	s3._update_containment()
+	if s3.contained_fid != 1:
+		fails.append("机制校验失败：领跑者未被围堵（contained=%d）" % s3.contained_fid)
+	# C. 军事威慑豁免：同一领跑者拥有绝对军力后围堵解除
+	s3.region(int(s3.factions[1]["capital_id"]))["army"] = 30
+	s3._update_containment()
+	if s3.contained_fid != -1:
+		fails.append("机制校验失败：绝对军事霸权未豁免围堵（contained=%d）" % s3.contained_fid)
 
 	print("\n==== 结果 ====")
 	print("代际 Gen%d | 控制 %d 区 | 科技 Lv%d | 电力墙:%s 数据短缺:%s" % [

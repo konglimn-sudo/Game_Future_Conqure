@@ -42,6 +42,20 @@ const AI_FACTIONS := [
 		"persona": {"w_pop": 0.6, "w_energy": 1.6, "w_fab": 2.0,
 			"alloc_train": 0.22, "alloc_infer": 0.46, "army_drive": 1.0, "expand": 2},
 	},
+	{
+		"key": "EUR", "name": "欧罗巴联合体",
+		"capital": "DEU", "start": ["FRA"],
+		"start_fab": "",
+		"persona": {"w_pop": 1.0, "w_energy": 1.0, "w_fab": 3.0,
+			"alloc_train": 0.32, "alloc_infer": 0.33, "army_drive": 0.1, "expand": 3},
+	},
+	{
+		"key": "INDF", "name": "天竺崛起",
+		"capital": "IND:北方邦", "start": ["IND:马哈拉施特拉邦", "IND:卡纳塔克邦"],
+		"start_fab": "IND:卡纳塔克邦",
+		"persona": {"w_pop": 1.4, "w_energy": 0.8, "w_fab": 2.5,
+			"alloc_train": 0.55, "alloc_infer": 0.28, "army_drive": 0.2, "expand": 1},
+	},
 ]
 
 static func create(world_path: String, params_path: String) -> Sim:
@@ -255,6 +269,13 @@ func _update_containment() -> void:
 	var threat := false
 	if leader >= 0 and leader_n >= int(P["threat_min_regions"]):
 		if total > 0 and float(leader_n) / total >= float(P["threat_region_share"]):
+			threat = true
+		# 多极世界：对第二名的相对领先同样构成威胁
+		var second_n := 0
+		for fid in range(factions.size()):
+			if fid != leader:
+				second_n = maxi(second_n, controlled_of(fid).size())
+		if leader_n >= int(ceil(second_n * float(P["threat_lead_ratio"]))):
 			threat = true
 		var best_other_gen := 1
 		for fid in range(factions.size()):
