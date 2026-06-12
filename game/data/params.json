@@ -51,5 +51,14 @@
   "containment_focus": 1.8,
   "deterrence_ratio": 1.5,
   "deterrence_min_mil": 12.0,
-  "threat_lead_ratio": 1.4
+  "threat_lead_ratio": 1.4,
+  "defender_bonus": 1.25,
+  "unsupplied_factor": 0.3,
+  "combat_infer_floor": 0.5,
+  "attack_loss": 0.85,
+  "defend_loss": 0.95,
+  "war_stale_months": 12,
+  "ai_war_base_prob": 0.05,
+  "ai_war_advantage": 1.5,
+  "ai_attack_margin": 1.25
 }

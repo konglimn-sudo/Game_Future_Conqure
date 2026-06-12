@@ -21,8 +21,8 @@ func _init() -> void:
 		else:
 			sim.set_allocation(0.40, 0.30)
 
-		# 军团演练：中期组建一支并调动，验证机制即可（省级地图下芯片紧张）
-		if t >= 10 and t <= 28 and sim.army_total() < 1:
+		# 军团演练 + 驻防：中期起维持 3 支军团（M2 后被宣战时不至于裸奔）
+		if t >= 10 and sim.army_total() < 3:
 			for r in sim.regions:
 				if r.get("capital", false) and sim.can_build_army(int(r["id"])) == "":
 					sim.do_build_army(int(r["id"]))
@@ -112,6 +112,59 @@ func _init() -> void:
 	s3._update_containment()
 	if s3.contained_fid != -1:
 		fails.append("机制校验失败：绝对军事霸权未豁免围堵（contained=%d）" % s3.contained_fid)
+
+	# D. 战争机制（确定性合成场景）
+	var s4 := Sim.create("res://data/world.json", "res://data/params.json")
+	s4.set_seed(7)
+	# 找一块与美利坚体系控制区相邻的中立区，让玩家空降驻军
+	var stage := -1
+	var target := -1
+	for r in s4.controlled_of(1):
+		for n in s4.adj[str(int(r["id"]))]:
+			var nr: Dictionary = s4.region(int(n))
+			if s4.owner_of(nr) == -1:
+				stage = int(n)
+				target = int(r["id"])
+				break
+		if stage >= 0:
+			break
+	if stage < 0:
+		fails.append("战争校验：找不到美方邻接的中立区")
+	else:
+		s4.region(stage)["inf"] = {"0": 100}
+		s4.region(stage)["army"] = 6
+		s4.terr_version += 1
+		# D1. 未宣战不可进攻
+		if s4.can_attack(stage, target, 0) == "":
+			fails.append("战争校验失败：未宣战竟可进攻")
+		s4.declare_war(0, 1)
+		# D2. 攻占无守备区
+		s4.region(target)["army"] = 0
+		if not s4.do_attack(stage, target, 0):
+			fails.append("战争校验失败：无法进攻无守备敌区")
+		elif s4.owner_of(s4.region(target)) != 0:
+			fails.append("战争校验失败：攻占后归属未转移")
+		# D3. 重兵防守可挫败进攻（守方 10 vs 攻方 2，攻方应无法占领）
+		var stage2 := target          # 刚占的区，驻军 6
+		s4.region(stage2)["army"] = 2
+		var target2 := -1
+		for n in s4.adj[str(stage2)]:
+			if s4.owner_of(s4.region(int(n))) == 1:
+				target2 = int(n)
+				break
+		if target2 >= 0:
+			s4.region(target2)["army"] = 10
+			s4.do_attack(stage2, target2, 0)
+			if s4.owner_of(s4.region(target2)) == 0:
+				fails.append("战争校验失败：2 攻 10 竟然得手（守方加成失效）")
+		# D4. 断补给削弱：孤立区战力应为 0.3 倍
+		var p_full := s4.combat_power(0, 4, true)
+		var p_cut := s4.combat_power(0, 4, false)
+		if absf(p_cut / p_full - float(s4.P["unsupplied_factor"])) > 0.01:
+			fails.append("战争校验失败：断补给系数不生效（%.2f）" % (p_cut / p_full))
+		# D5. 空降区（不连首都）应判定为断补给
+		if s4.supplied(stage, 0):
+			fails.append("战争校验失败：飞地竟被判定为有补给")
 
 	print("\n==== 结果 ====")
 	print("代际 Gen%d | 控制 %d 区 | 科技 Lv%d | 电力墙:%s 数据短缺:%s" % [

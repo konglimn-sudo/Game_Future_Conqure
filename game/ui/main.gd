@@ -115,6 +115,7 @@ const TERRA_COLORS := {
 const MAP_SCALE := 7.0         # 像素/经度°，与生成器一致
 const SEASON_ICON := ["❄", "❄", "🌱", "🌱", "🌱", "☀", "☀", "☀", "🍂", "🍂", "🍂", "❄"]
 var move_mode := false     # 军团调动：等待点击目的地
+var attack_mode := false   # 军团进攻：等待点击相邻敌区
 var milestones_done := {}
 
 # 时间流动：每"月"自动结算一次
@@ -161,7 +162,7 @@ func _ready() -> void:
 	_log("[b]M3 大国竞逐[/b] —— 🟦 你（京津冀）对阵四大势力：[color=#2aa]美利坚体系（青）[/color]｜[color=#e54]北方集团（红）[/color]｜[color=#cb4]欧罗巴联合体（金）[/color]｜[color=#e92]天竺崛起（橙）[/color]")
 	_log("时间以月流动；各国资源会变迁、中立国会自建基建（占领时继承）、放任的影响力会消退；中立区先到 60 影响度者得。")
 	_log("左键拖动/点击选国 ｜ 双指或滚轮缩放 ｜ WASD 平移 ｜ 空格=继续/暂停 ｜ 1~4=速度 ｜ 回车=单步 ｜ M=卫星/政治图层 ｜ F5/F9=存/读档")
-	_log("🛡 军团：控制区内组建（吃推理算力维护），「调动军团」后点击相邻控制区移防——战斗系统在 M2 到来")
+	_log("⚔ 战争（M2）：选敌方区域「宣战」→ 选己方驻军区「进攻」点相邻敌区。战力 = 军团×代际×补给×推理供给；断补给（⛓）战力 ×0.3，守方 +25%，新占领区 2 个月整编")
 	_log("[color=#fc6]目标：控制 45 区、拿下高端晶圆厂、算力 200、科技 Lv10。按空格开始。[/color]")
 
 func _setup_font() -> void:
@@ -628,6 +629,8 @@ func _build_ui() -> void:
 		["fab", "升级晶圆厂"],
 		["army_build", "组建军团"],
 		["army_move", "调动军团 →"],
+		["war", "⚔ 宣战"],
+		["attack", "⚔ 进攻 →"],
 	]
 	for a in acts:
 		var b := Button.new()
@@ -711,9 +714,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 			KEY_HOME:
 				cam.position = centers[_capital_id()]
 			KEY_ESCAPE:
-				if move_mode:
+				if move_mode or attack_mode:
 					move_mode = false
-					_log("🛡 已取消调动")
+					attack_mode = false
+					_log("已取消指令")
 				else:
 					selected = -1
 					highlight.visible = false
@@ -821,6 +825,16 @@ func _pick(pos: Vector2) -> void:
 						_log("🛡 无法调动：" + why)
 					_refresh()
 					return
+				if attack_mode and selected >= 0:
+					attack_mode = false
+					var why2 := sim.can_attack(selected, id)
+					if why2 == "":
+						sim.do_attack(selected, id)
+						_flush_events()
+					else:
+						_log("⚔ 无法进攻：" + why2)
+					_refresh()
+					return
 				_select(id)
 				_refresh()
 				return
@@ -866,6 +880,13 @@ func _on_action(kind: String) -> void:
 		"army_move":
 			move_mode = true
 			_log("🛡 调动模式：点击相邻的控制区作为目的地（Esc 取消）")
+		"war":
+			var owner := sim.owner_of(sim.region(selected))
+			if owner > 0 and sim.declare_war(0, owner):
+				_flush_events()
+		"attack":
+			attack_mode = true
+			_log("⚔ 进攻模式：点击相邻的敌方区域发起攻击（Esc 取消）")
 		_:
 			if sim.do_build(selected, kind):
 				_flush_events()
@@ -1007,7 +1028,7 @@ func _refresh_time_controls() -> void:
 
 ## 演化事件在地图上的浮动标记
 func _spawn_evo_marks() -> void:
-	const ICONS := {"up": "📈", "down": "📉", "build": "🏗", "fab": "🏭", "flag": "🚩"}
+	const ICONS := {"up": "📈", "down": "📉", "build": "🏗", "fab": "🏭", "flag": "🚩", "battle": "💥"}
 	var ms := clampf(1.1 / cam.zoom.x, 0.09, 1.3)
 	for m in sim.evo_marks:
 		var lab := Label.new()
@@ -1100,10 +1121,14 @@ func _refresh() -> void:
 				suffix += " %d%%" % inf
 		labels[id].text = _region_caption(r) + suffix
 		detail_labels[id].text = _detail_text(r)
-		# 军团徽章：有驻军即常显（作战单元一眼可见）
+		# 军团徽章：有驻军即常显；断补给标 ⛓（战力 ×0.3）
 		army_badges[id].visible = sim.army_of(r) > 0
 		if sim.army_of(r) > 0:
-			army_badges[id].text = "🛡 %d" % sim.army_of(r)
+			var o := sim.owner_of(r)
+			var chain := ""
+			if o >= 0 and not sim.supplied(id, o):
+				chain = " ⛓"
+			army_badges[id].text = "🛡 %d%s" % [sim.army_of(r), chain]
 	_apply_season()
 	var th := sim.next_gen_threshold()
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
@@ -1121,6 +1146,12 @@ func _refresh() -> void:
 		stance = " ｜ 🛑 被围堵"
 	elif sim.contained_fid > 0:
 		stance = " ｜ 🛑 围堵〔%s〕" % sim.faction_name(sim.contained_fid)
+	var foes := sim.enemies_of(0)
+	if not foes.is_empty():
+		var names := []
+		for e in foes:
+			names.append(sim.faction_name(e))
+		stance += " ｜ ⚔ 交战：" + "、".join(names)
 	lbl_top["misc"].text = "科技 Lv%d ｜ 经济 %d%% ｜ 推理供给 %d%% ｜ 🛡 %d%s" % [sim.tech_level(), int(sim.eco_coef() * 100), int(sim.last_supply * 100), sim.army_total(), stance]
 	_update_label_visibility()
 	_refresh_alloc()
@@ -1197,6 +1228,15 @@ func _refresh_region() -> void:
 		move_why = "未控制该区域"
 	elif sim.army_of(r) <= 0:
 		move_why = "该区域没有军团"
+	var war_why := ""
+	var r_owner := sim.owner_of(r)
+	if r_owner <= 0:
+		war_why = "选中敌方势力的区域以宣战" if r_owner < 0 else "不能对自己宣战"
+	elif sim.is_at_war(0, r_owner):
+		war_why = "已与〔%s〕交战" % sim.faction_name(r_owner)
+	var atk_why := move_why
+	if atk_why == "" and not sim.at_war_any(0):
+		atk_why = "未处于战争状态（先宣战）"
 	var reasons := {
 		"infiltrate": sim.can_infiltrate(selected),
 		"auto": auto_why,
@@ -1205,6 +1245,8 @@ func _refresh_region() -> void:
 		"fab": sim.can_build(selected, "fab"),
 		"army_build": sim.can_build_army(selected),
 		"army_move": move_why,
+		"war": war_why,
+		"attack": atk_why,
 	}
 	for k in btn:
 		var why: String = reasons[k]

@@ -21,6 +21,9 @@ var auto_infiltrate := {}         # 玩家自动渗透队列 region_id -> true
 var infiltrated_this_turn := {}   # "fid:rid" -> true
 var last_report := {}             # 玩家结算摘要
 var contained_fid := -1           # 当前被全球围堵的势力（-1 = 无）
+var wars := {}                    # "a:b"(a<b) -> {start, last_cap}
+var terr_version := 0             # 领土版本号（补给缓存失效用）
+var _supply_cache := {}           # fid -> {ver, set}
 var rng := RandomNumberGenerator.new()
 
 const START_YEAR := 2030
@@ -33,28 +36,28 @@ const AI_FACTIONS := [
 		"capital": "USA:纽约州", "start": ["USA:加利福尼亚州", "USA:得克萨斯州"],
 		"start_fab": "USA:加利福尼亚州",
 		"persona": {"w_pop": 1.0, "w_energy": 1.0, "w_fab": 4.0,
-			"alloc_train": 0.38, "alloc_infer": 0.34, "army_drive": 0.4, "expand": 2},
+			"alloc_train": 0.38, "alloc_infer": 0.34, "army_drive": 0.4, "expand": 2, "aggression": 0.25},
 	},
 	{
 		"key": "RUS", "name": "北方集团",
 		"capital": "RUS:西部", "start": ["RUS:乌拉尔", "RUS:西西伯利亚"],
 		"start_fab": "",
 		"persona": {"w_pop": 0.6, "w_energy": 1.6, "w_fab": 2.0,
-			"alloc_train": 0.22, "alloc_infer": 0.46, "army_drive": 1.0, "expand": 2},
+			"alloc_train": 0.22, "alloc_infer": 0.46, "army_drive": 1.0, "expand": 2, "aggression": 0.85},
 	},
 	{
 		"key": "EUR", "name": "欧罗巴联合体",
 		"capital": "DEU", "start": ["FRA"],
 		"start_fab": "",
 		"persona": {"w_pop": 1.0, "w_energy": 1.0, "w_fab": 3.0,
-			"alloc_train": 0.32, "alloc_infer": 0.33, "army_drive": 0.1, "expand": 3},
+			"alloc_train": 0.32, "alloc_infer": 0.33, "army_drive": 0.1, "expand": 3, "aggression": 0.05},
 	},
 	{
 		"key": "INDF", "name": "天竺崛起",
 		"capital": "IND:北方邦", "start": ["IND:马哈拉施特拉邦", "IND:卡纳塔克邦"],
 		"start_fab": "IND:卡纳塔克邦",
 		"persona": {"w_pop": 1.4, "w_energy": 0.8, "w_fab": 2.5,
-			"alloc_train": 0.55, "alloc_infer": 0.28, "army_drive": 0.2, "expand": 1},
+			"alloc_train": 0.55, "alloc_infer": 0.28, "army_drive": 0.2, "expand": 1, "aggression": 0.1},
 	},
 ]
 
@@ -250,6 +253,150 @@ func army_total(fid: int = 0) -> int:
 func military_index(fid: int) -> float:
 	return army_total(fid) * gen_coef(fid)
 
+# ---------- M2 战争系统 ----------
+
+func _war_key(a: int, b: int) -> String:
+	return "%d:%d" % [mini(a, b), maxi(a, b)]
+
+func is_at_war(a: int, b: int) -> bool:
+	return wars.has(_war_key(a, b))
+
+func at_war_any(fid: int) -> bool:
+	for k in wars:
+		var p2 := (k as String).split(":")
+		if int(p2[0]) == fid or int(p2[1]) == fid:
+			return true
+	return false
+
+func enemies_of(fid: int) -> Array:
+	var out := []
+	for k in wars:
+		var p2 := (k as String).split(":")
+		if int(p2[0]) == fid:
+			out.append(int(p2[1]))
+		elif int(p2[1]) == fid:
+			out.append(int(p2[0]))
+	return out
+
+func declare_war(fid: int, target: int) -> bool:
+	if fid == target or is_at_war(fid, target):
+		return false
+	wars[_war_key(fid, target)] = {"start": turn, "last_cap": turn}
+	events.append("⚔ %s对%s宣战！" %
+		["你" if fid == 0 else "〔%s〕" % faction_name(fid),
+		 "你" if target == 0 else "〔%s〕" % faction_name(target)])
+	return true
+
+## 补给线：与本势力首都经己方控制区连通（设计文档：断链瘫痪）
+func supplied(rid: int, fid: int) -> bool:
+	var c: Dictionary = _supply_cache.get(fid, {})
+	if int(c.get("ver", -1)) != terr_version:
+		var reach := {}
+		var cap := int(factions[fid]["capital_id"])
+		if is_owned_by(region(cap), fid):
+			var queue := [cap]
+			reach[cap] = true
+			while not queue.is_empty():
+				var cur: int = queue.pop_back()
+				for n in adj[str(cur)]:
+					var ni := int(n)
+					if not reach.has(ni) and is_owned_by(region(ni), fid):
+						reach[ni] = true
+						queue.append(ni)
+		c = {"ver": terr_version, "set": reach}
+		_supply_cache[fid] = c
+	return c["set"].has(rid)
+
+## 有效战力 = 军团 × 代际系数 × 补给环 × 决策环（推理供给率）
+func combat_power(fid: int, armies: int, is_supplied: bool) -> float:
+	var fl: float = P["combat_infer_floor"]
+	return armies * gen_coef(fid) \
+		* (1.0 if is_supplied else float(P["unsupplied_factor"])) \
+		* (fl + (1.0 - fl) * float(factions[fid]["last_supply"]))
+
+func can_attack(from_id: int, to_id: int, fid: int = 0) -> String:
+	var a := region(from_id)
+	if not is_owned_by(a, fid):
+		return "出发地未控制"
+	if army_of(a) <= 0:
+		return "该区域没有军团"
+	if turn < int(a.get("acd", 0)):
+		return "占领区整编中（%d 月后可继续进攻）" % (int(a["acd"]) - turn)
+	var owner := owner_of(region(to_id))
+	if owner == -1:
+		return "中立国走渗透路线（军事入侵属敌对势力）"
+	if owner == fid:
+		return "目标是己方区域"
+	if not is_at_war(fid, owner):
+		return "未与〔%s〕交战（先宣战）" % faction_name(owner)
+	if not (to_id in adj[str(from_id)].map(func(x): return int(x))):
+		return "不相邻"
+	return ""
+
+## 战斗解算：全员出击；守方有加成；断补给与推理饥饿大幅削弱战力
+func do_attack(from_id: int, to_id: int, fid: int = 0) -> bool:
+	if can_attack(from_id, to_id, fid) != "":
+		return false
+	var a := region(from_id)
+	var b := region(to_id)
+	var dfid := owner_of(b)
+	var att_n := army_of(a)
+	var def_n := army_of(b)
+	var A := combat_power(fid, att_n, supplied(from_id, fid)) * rng.randf_range(0.9, 1.1)
+	var D := 0.0
+	if def_n > 0:
+		D = combat_power(dfid, def_n, supplied(to_id, dfid)) \
+			* float(P["defender_bonus"]) * rng.randf_range(0.9, 1.1)
+	var involves_player := fid == 0 or dfid == 0
+	if D <= 0.001:
+		_capture(b, fid, dfid)
+		a["army"] = 0
+		b["army"] = att_n
+		events.append("⚔ %s攻占无守备的〔%s〕（%d 军团进驻）" %
+			[_who(fid), b["name"], att_n])
+		return true
+	var att_loss := clampi(int(round(att_n * D / (A + D) * float(P["attack_loss"]))), 0, att_n)
+	var def_loss := clampi(int(round(def_n * A / (A + D) * float(P["defend_loss"]))), 0, def_n)
+	a["army"] = att_n - att_loss
+	b["army"] = def_n - def_loss
+	if army_of(b) <= 0 and army_of(a) > 0:
+		var survivors := army_of(a)
+		_capture(b, fid, dfid)
+		a["army"] = 0
+		b["army"] = survivors
+		events.append("⚔ %s攻占〔%s〕！战损 攻%d/守%d，%d 军团进驻" %
+			[_who(fid), b["name"], att_loss, def_loss, survivors])
+		evo_marks.append({"id": int(b["id"]), "kind": "battle"})
+	else:
+		if involves_player:
+			events.append("⚔ 〔%s〕进攻〔%s〕受挫：战损 攻%d/守%d（守方加成与体系完整度起效）" %
+				[a["name"], b["name"], att_loss, def_loss])
+		evo_marks.append({"id": int(b["id"]), "kind": "battle"})
+	return true
+
+func _who(fid: int) -> String:
+	return "你" if fid == 0 else "〔%s〕" % faction_name(fid)
+
+func _capture(r: Dictionary, fid: int, dfid: int) -> void:
+	r["inf"] = {str(fid): 100}
+	r["li"] = {str(fid): turn}
+	r["acd"] = turn + 2  # 占领消化：2 个月整编期内不能从此区继续进攻
+	terr_version += 1
+	auto_infiltrate.erase(int(r["id"]))
+	var k := _war_key(fid, dfid)
+	if wars.has(k):
+		wars[k]["last_cap"] = turn
+
+## 无战果自动停战
+func _update_wars() -> void:
+	for k in wars.keys():
+		var w: Dictionary = wars[k]
+		if turn - int(w["last_cap"]) >= int(P["war_stale_months"]):
+			var p2 := (k as String).split(":")
+			events.append("🕊 停战：%s与%s结束敌对（前线长期僵持）" %
+				[_who(int(p2[0])), _who(int(p2[1]))])
+			wars.erase(k)
+
 # ---------- 反霸权动力学（设计文档 7.5 / 9.4） ----------
 ## 领跑者触发全球围堵：渗透增益削减、影响力消退加速、AI 转向堵截。
 ## 例外：拥有绝对军事霸权者无人敢围堵——弱霸权遭合纵，强霸权遭追随。
@@ -367,6 +514,7 @@ func do_infiltrate(id: int, fid: int = 0) -> bool:
 		for k in r["inf"].keys():
 			if k != key:
 				r["inf"].erase(k)
+		terr_version += 1
 		var inherit := ""
 		if int(r["plant"]) > 0 or int(r["dc"]) > 0:
 			inherit = "，继承电厂 %d／数据中心 %d" % [int(r["plant"]), int(r["dc"])]
@@ -474,8 +622,9 @@ func do_move_army(from_id: int, to_id: int, fid: int = 0) -> bool:
 func end_turn() -> void:
 	events.clear()
 	evo_marks.clear()
-	# 0. 反霸权态势更新（AI 决策与渗透增益都依赖它）
+	# 0. 反霸权态势与战争状态更新（AI 决策都依赖它们）
 	_update_containment()
+	_update_wars()
 	# 0a. 玩家自动渗透队列
 	for id in auto_infiltrate.keys():
 		if can_infiltrate(int(id), 0) == "":
