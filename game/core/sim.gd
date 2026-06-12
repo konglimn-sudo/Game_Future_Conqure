@@ -240,8 +240,101 @@ func next_gen_threshold(fid: int = 0) -> float:
 	var g: int = factions[fid]["gen"]
 	return th[g - 1] if g - 1 < th.size() else -1.0
 
+# ---------- 兵种体系：代际决定编成（Gen1 现代军队 → Gen3+ 无人化） ----------
+
+const UNIT_ORDER := ["tank", "inf", "robot", "air", "drone"]
+const UNIT_ICON := {"tank": "⚙", "inf": "🪖", "robot": "🤖", "air": "✈", "drone": "🛩"}
+const UNIT_AIR := {"tank": false, "inf": false, "robot": false, "air": true, "drone": true}
+const AIR_POWER_BONUS := 0.15     # 空中单位战力加成
+
+func unit_name(t: String) -> String:
+	match t:
+		"tank": return "坦克师"
+		"inf": return "装甲兵"
+		"robot": return "机器人军团"
+		"air": return "战斗机联队"
+		"drone": return "无人机群"
+	return t
+
+## 时代编成：建军时按当前代际的兵种配比补齐短板
+func _era_profile(gen: int) -> Dictionary:
+	if gen <= 1:
+		return {"inf": 0.35, "tank": 0.30, "air": 0.20, "drone": 0.15}
+	if gen == 2:
+		return {"inf": 0.30, "tank": 0.20, "air": 0.20, "drone": 0.30}
+	return {"robot": 0.40, "drone": 0.35, "air": 0.15, "tank": 0.10}
+
+func next_unit_type(fid: int) -> String:
+	var prof := _era_profile(int(factions[fid]["gen"]))
+	var comp := {}
+	var total := 0
+	for r in controlled_of(fid):
+		for t in units_of(r):
+			comp[t] = int(comp.get(t, 0)) + int(units_of(r)[t])
+			total += int(units_of(r)[t])
+	var best := ""
+	var best_gap := -INF
+	for t in prof:
+		var share := (float(comp.get(t, 0)) / total) if total > 0 else 0.0
+		var gap: float = prof[t] - share
+		if gap > best_gap:
+			best_gap = gap
+			best = t
+	return best
+
+func units_of(r: Dictionary) -> Dictionary:
+	return r.get("units", {})
+
 func army_of(r: Dictionary) -> int:
-	return int(r.get("army", 0))
+	var n := 0
+	for t in units_of(r):
+		n += int(units_of(r)[t])
+	return n
+
+## 编成战力系数：空中单位 +15%
+func stack_mult(units: Dictionary) -> float:
+	var n := 0
+	var w := 0.0
+	for t in units:
+		var c := int(units[t])
+		n += c
+		w += c * (1.0 + AIR_POWER_BONUS if UNIT_AIR.get(t, false) else 1.0)
+	return (w / n) if n > 0 else 1.0
+
+func has_ground(units: Dictionary) -> bool:
+	for t in units:
+		if not UNIT_AIR.get(t, false) and int(units[t]) > 0:
+			return true
+	return false
+
+func units_str(r: Dictionary) -> String:
+	var parts := []
+	for t in UNIT_ORDER:
+		var c := int(units_of(r).get(t, 0))
+		if c > 0:
+			parts.append("%s%d" % [UNIT_ICON[t], c])
+	return " ".join(parts)
+
+## 按比例分摊损耗（最大余数法）
+func _apply_losses(units: Dictionary, loss: int) -> void:
+	var total := 0
+	for t in units:
+		total += int(units[t])
+	loss = mini(loss, total)
+	var left := loss
+	for t in units.keys():
+		var share := int(floor(float(units[t]) / total * loss))
+		units[t] = int(units[t]) - share
+		left -= share
+	for t in units.keys():
+		if left <= 0:
+			break
+		if int(units[t]) > 0:
+			units[t] = int(units[t]) - 1
+			left -= 1
+	for t in units.keys():
+		if int(units[t]) <= 0:
+			units.erase(t)
 
 func army_total(fid: int = 0) -> int:
 	var n := 0
@@ -333,7 +426,8 @@ func can_attack(from_id: int, to_id: int, fid: int = 0) -> String:
 		return "不相邻"
 	return ""
 
-## 战斗解算：全员出击；守方有加成；断补给与推理饥饿大幅削弱战力
+## 战斗解算：全员出击；守方有加成；断补给与推理饥饿大幅削弱战力；
+## 编成影响：空中单位 +15% 战力，但纯空军不能占领（空袭只能削弱）
 func do_attack(from_id: int, to_id: int, fid: int = 0) -> bool:
 	if can_attack(from_id, to_id, fid) != "":
 		return false
@@ -342,30 +436,33 @@ func do_attack(from_id: int, to_id: int, fid: int = 0) -> bool:
 	var dfid := owner_of(b)
 	var att_n := army_of(a)
 	var def_n := army_of(b)
-	var A := combat_power(fid, att_n, supplied(from_id, fid)) * rng.randf_range(0.9, 1.1)
+	var A := combat_power(fid, att_n, supplied(from_id, fid)) \
+		* stack_mult(units_of(a)) * rng.randf_range(0.9, 1.1)
 	var D := 0.0
 	if def_n > 0:
-		D = combat_power(dfid, def_n, supplied(to_id, dfid)) \
+		D = combat_power(dfid, def_n, supplied(to_id, dfid)) * stack_mult(units_of(b)) \
 			* float(P["defender_bonus"]) * rng.randf_range(0.9, 1.1)
-	var involves_player := fid == 0 or dfid == 0
 	if D <= 0.001:
+		if not has_ground(units_of(a)):
+			events.append("⚔ 空中力量无法占领〔%s〕（需要地面单位进驻）" % b["name"])
+			return false
 		_capture(b, fid, dfid)
-		a["army"] = 0
-		b["army"] = att_n
-		events.append("⚔ %s攻占无守备的〔%s〕（%d 军团进驻）" %
-			[_who(fid), b["name"], att_n])
+		b["units"] = units_of(a)
+		a["units"] = {}
+		events.append("⚔ %s攻占无守备的〔%s〕（%s 进驻）" %
+			[_who(fid), b["name"], units_str(b)])
 		return true
 	var att_loss := clampi(int(round(att_n * D / (A + D) * float(P["attack_loss"]))), 0, att_n)
 	var def_loss := clampi(int(round(def_n * A / (A + D) * float(P["defend_loss"]))), 0, def_n)
-	a["army"] = att_n - att_loss
-	b["army"] = def_n - def_loss
-	if army_of(b) <= 0 and army_of(a) > 0:
-		var survivors := army_of(a)
+	_apply_losses(a["units"], att_loss)
+	_apply_losses(b["units"], def_loss)
+	var involves_player := fid == 0 or dfid == 0
+	if army_of(b) <= 0 and army_of(a) > 0 and has_ground(units_of(a)):
 		_capture(b, fid, dfid)
-		a["army"] = 0
-		b["army"] = survivors
-		events.append("⚔ %s攻占〔%s〕！战损 攻%d/守%d，%d 军团进驻" %
-			[_who(fid), b["name"], att_loss, def_loss, survivors])
+		b["units"] = units_of(a)
+		a["units"] = {}
+		events.append("⚔ %s攻占〔%s〕！战损 攻%d/守%d，%s 进驻" %
+			[_who(fid), b["name"], att_loss, def_loss, units_str(b)])
 		evo_marks.append({"id": int(b["id"]), "kind": "battle"})
 	else:
 		if involves_player:
@@ -585,10 +682,13 @@ func do_build_army(id: int, fid: int = 0) -> bool:
 		return false
 	factions[fid]["chips"] -= P["army_cost_chips"]
 	var r := region(id)
-	r["army"] = army_of(r) + 1
+	var t := next_unit_type(fid)
+	if not r.has("units"):
+		r["units"] = {}
+	r["units"][t] = int(r["units"].get(t, 0)) + 1
 	if fid == 0:
-		events.append("🛡 〔%s〕组建机器人军团 → %d（维护 +%d 推理需求）" %
-			[r["name"], army_of(r), int(P["army_upkeep"])])
+		events.append("🛡 〔%s〕组建%s%s → 驻军 %d（维护 +%d 推理需求）" %
+			[r["name"], UNIT_ICON[t], unit_name(t), army_of(r), int(P["army_upkeep"])])
 	return true
 
 func can_move_army(from_id: int, to_id: int, fid: int = 0) -> String:
@@ -606,15 +706,19 @@ func can_move_army(from_id: int, to_id: int, fid: int = 0) -> String:
 		return "不相邻"
 	return ""
 
+## 调动：整建制移防（全部兵力并入目标区）
 func do_move_army(from_id: int, to_id: int, fid: int = 0) -> bool:
 	if can_move_army(from_id, to_id, fid) != "":
 		return false
 	var a := region(from_id)
 	var b := region(to_id)
-	a["army"] = army_of(a) - 1
-	b["army"] = army_of(b) + 1
+	if not b.has("units"):
+		b["units"] = {}
+	for t in units_of(a):
+		b["units"][t] = int(b["units"].get(t, 0)) + int(units_of(a)[t])
+	a["units"] = {}
 	if fid == 0:
-		events.append("🛡 军团调动：〔%s〕→〔%s〕（驻 %d）" % [a["name"], b["name"], army_of(b)])
+		events.append("🛡 军团移防：〔%s〕→〔%s〕（驻 %s）" % [a["name"], b["name"], units_str(b)])
 	return true
 
 # ---------- 月度结算 ----------
@@ -772,7 +876,8 @@ func save_state() -> Dictionary:
 		mut[str(int(r["id"]))] = {
 			"inf": r["inf"], "li": r["li"], "plant": int(r["plant"]),
 			"dc": int(r["dc"]), "fab": int(r["fab"]),
-			"pop": int(r["pop"]), "energy": int(r["energy"]), "army": army_of(r),
+			"pop": int(r["pop"]), "energy": int(r["energy"]),
+			"units": units_of(r), "acd": int(r.get("acd", 0)),
 		}
 	return {
 		"v": 2, "turn": turn, "factions": factions,
@@ -793,8 +898,16 @@ func load_state(d: Dictionary) -> void:
 		var m: Dictionary = mut.get(str(int(r["id"])), {})
 		for k in m:
 			r[k] = m[k]
-		for kk in ["plant", "dc", "fab", "pop", "energy", "army"]:
+		for kk in ["plant", "dc", "fab", "pop", "energy"]:
 			r[kk] = int(r.get(kk, 0))
+		# 旧档兼容：单数值 army → 装甲兵编成
+		if r.has("army") and int(r.get("army", 0)) > 0:
+			r["units"] = {"inf": int(r["army"])}
+			r.erase("army")
+		var u: Dictionary = r.get("units", {})
+		for t in u.keys():
+			u[t] = int(u[t])
+	terr_version += 1
 	infiltrated_this_turn.clear()
 	events.clear()
 

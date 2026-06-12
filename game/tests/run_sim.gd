@@ -108,7 +108,7 @@ func _init() -> void:
 	if s3.contained_fid != 1:
 		fails.append("机制校验失败：领跑者未被围堵（contained=%d）" % s3.contained_fid)
 	# C. 军事威慑豁免：同一领跑者拥有绝对军力后围堵解除
-	s3.region(int(s3.factions[1]["capital_id"]))["army"] = 30
+	s3.region(int(s3.factions[1]["capital_id"]))["units"] = {"tank": 15, "inf": 10, "air": 5}
 	s3._update_containment()
 	if s3.contained_fid != -1:
 		fails.append("机制校验失败：绝对军事霸权未豁免围堵（contained=%d）" % s3.contained_fid)
@@ -132,28 +132,28 @@ func _init() -> void:
 		fails.append("战争校验：找不到美方邻接的中立区")
 	else:
 		s4.region(stage)["inf"] = {"0": 100}
-		s4.region(stage)["army"] = 6
+		s4.region(stage)["units"] = {"tank": 3, "inf": 2, "air": 1}
 		s4.terr_version += 1
 		# D1. 未宣战不可进攻
 		if s4.can_attack(stage, target, 0) == "":
 			fails.append("战争校验失败：未宣战竟可进攻")
 		s4.declare_war(0, 1)
 		# D2. 攻占无守备区
-		s4.region(target)["army"] = 0
+		s4.region(target)["units"] = {}
 		if not s4.do_attack(stage, target, 0):
 			fails.append("战争校验失败：无法进攻无守备敌区")
 		elif s4.owner_of(s4.region(target)) != 0:
 			fails.append("战争校验失败：攻占后归属未转移")
 		# D3. 重兵防守可挫败进攻（守方 10 vs 攻方 2，攻方应无法占领）
 		var stage2 := target          # 刚占的区，驻军 6
-		s4.region(stage2)["army"] = 2
+		s4.region(stage2)["units"] = {"inf": 2}
 		var target2 := -1
 		for n in s4.adj[str(stage2)]:
 			if s4.owner_of(s4.region(int(n))) == 1:
 				target2 = int(n)
 				break
 		if target2 >= 0:
-			s4.region(target2)["army"] = 10
+			s4.region(target2)["units"] = {"tank": 5, "inf": 5}
 			s4.do_attack(stage2, target2, 0)
 			if s4.owner_of(s4.region(target2)) == 0:
 				fails.append("战争校验失败：2 攻 10 竟然得手（守方加成失效）")

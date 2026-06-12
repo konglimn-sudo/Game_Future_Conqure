@@ -1121,14 +1121,19 @@ func _refresh() -> void:
 				suffix += " %d%%" % inf
 		labels[id].text = _region_caption(r) + suffix
 		detail_labels[id].text = _detail_text(r)
-		# 军团徽章：有驻军即常显；断补给标 ⛓（战力 ×0.3）
+		# 军团徽章：HOI4 式编成显示（⚙坦克 🪖装甲 🤖机器人 ✈战机 🛩无人机）；断补给标 ⛓
 		army_badges[id].visible = sim.army_of(r) > 0
 		if sim.army_of(r) > 0:
 			var o := sim.owner_of(r)
 			var chain := ""
 			if o >= 0 and not sim.supplied(id, o):
 				chain = " ⛓"
-			army_badges[id].text = "🛡 %d%s" % [sim.army_of(r), chain]
+			army_badges[id].text = sim.units_str(r) + chain
+			# 徽章随编成变宽
+			var w := maxf(44.0, army_badges[id].text.length() * 7.5)
+			army_badges[id].size = Vector2(w, 15)
+			army_badges[id].position = centers[id] + Vector2(-w / 2.0, 22)
+			army_badges[id].pivot_offset = Vector2(w / 2.0, 7)
 	_apply_season()
 	var th := sim.next_gen_threshold()
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
@@ -1206,7 +1211,9 @@ func _refresh_region() -> void:
 		ctl = "中立" if parts.is_empty() else "渗透中：" + " ｜ ".join(parts)
 	var t := "[b]%s%s[/b]（%s） %s\n" % [star, r["name"], r["arch"], ctl]
 	t += "人口 %d ｜ 能源 %d ｜ 晶圆厂 %d ｜ 发射场 %d\n" % [int(r["pop"]), int(r["energy"]), int(r["fab"]), int(r["launch"])]
-	t += "设施：电厂 %d/%d ｜ 数据中心 %d/%d ｜ 军团 🛡%d\n" % [int(r["plant"]), int(sim.P["max_plant"]), int(r["dc"]), int(sim.P["max_dc"]), sim.army_of(r)]
+	t += "设施：电厂 %d/%d ｜ 数据中心 %d/%d\n" % [int(r["plant"]), int(sim.P["max_plant"]), int(r["dc"]), int(sim.P["max_dc"])]
+	if sim.army_of(r) > 0:
+		t += "驻军：%s（共 %d）\n" % [sim.units_str(r), sim.army_of(r)]
 	if sim.is_controlled(r):
 		var pw: float = r["energy"] * sim.P["region_power_per_energy"] + r["plant"] * r["energy"] * sim.P["plant_power_per_energy"]
 		t += "贡献：⚡%.0f ｜ 💾%.0f ｜ 🔶%.0f ｜ 容量 %d" % [pw, r["pop"] * float(sim.P["pop_data"]), r["fab"] * float(sim.P["fab_chips"]), int(r["dc"]) * int(sim.P["dc_capacity"])]
@@ -1219,7 +1226,9 @@ func _refresh_region() -> void:
 		int(r["energy"]) * int(sim.P["plant_power_per_energy"]), int(sim.P["cost_plant"])]
 	btn["dc"].text = "数据中心 容量+%d（%d🔶）" % [int(sim.P["dc_capacity"]), int(sim.P["cost_dc"])]
 	btn["fab"].text = "升晶圆厂 🔶+%d/回（%d🔶）" % [int(sim.P["fab_chips"]), int(sim.P["cost_fab_upgrade"])]
-	btn["army_build"].text = "组建军团（%d🔶，维护+%d）" % [int(sim.P["army_cost_chips"]), int(sim.P["army_upkeep"])]
+	var nt := sim.next_unit_type(0)
+	btn["army_build"].text = "组建%s%s（%d🔶，维护+%d）" % [
+		Sim.UNIT_ICON[nt], sim.unit_name(nt), int(sim.P["army_cost_chips"]), int(sim.P["army_upkeep"])]
 	var auto_why := ""
 	if sim.is_controlled(r):
 		auto_why = "已是控制区"
