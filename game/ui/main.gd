@@ -368,6 +368,10 @@ func _build_map() -> void:
 	all_map_labels.append_array(big_labels)
 	for lab in all_map_labels:
 		_crispify(lab)
+	if OS.get_environment("FC_DEBUG") != "":
+		for bl in big_labels:
+			print("BIGPOST ", bl.text.substr(0, 4), " center=", bl.position + bl.pivot_offset,
+				" size=", bl.size, " minsize=", bl.get_minimum_size(), " scale=", bl.scale)
 	highlight = Line2D.new()
 	highlight.width = 2.6
 	highlight.default_color = Color(1.0, 0.85, 0.3)
@@ -417,6 +421,8 @@ func _build_country_names(map: Node2D) -> void:
 		lab.modulate.a = 0.55
 		map.add_child(lab)
 		big_labels.append(lab)
+		if OS.get_environment("FC_DEBUG") != "":
+			print("BIG ", g["name"], " anchor=", anchor, " center=", lab.position + lab.pivot_offset)
 
 ## 多边形质心（标准公式）
 func _ring_centroid(ring: PackedVector2Array) -> Vector2:
@@ -912,13 +918,20 @@ func _text_scale(z: float, cap: float) -> float:
 	return clampf(1.1 * pow(z, -0.45), 0.9 / z, cap / z)
 
 ## 大字号光栅化：字号/盒子/阴影 ×K，围绕原锚点缩回——高倍缩放下文字依然锐利
+## 注意：放大字号会触发 Label 最小尺寸钳制（盒子被悄悄撑大），枢轴必须按最终盒子重算，
+## 否则文字在歪掉的盒子里居中 → 系统性位移（大国名南漂 bug 的根因）
 func _crispify(lab: Label) -> void:
+	var old_size: Vector2 = lab.size
 	var anchor: Vector2 = lab.position + lab.pivot_offset
+	var rel := Vector2.ZERO
+	if old_size.x > 0.0 and old_size.y > 0.0:
+		rel = lab.pivot_offset / old_size
 	for key in ["font_size", "normal_font_size"]:
 		if lab.has_theme_font_size_override(key):
 			lab.add_theme_font_size_override(key, int(lab.get_theme_font_size(key) * FONT_K))
-	lab.size *= FONT_K
-	lab.pivot_offset *= FONT_K
+	var new_size := (old_size * FONT_K).max(lab.get_minimum_size())
+	lab.size = new_size
+	lab.pivot_offset = new_size * rel
 	lab.position = anchor - lab.pivot_offset
 	lab.add_theme_constant_override("shadow_offset_x", int(FONT_K))
 	lab.add_theme_constant_override("shadow_offset_y", int(FONT_K))
