@@ -387,12 +387,20 @@ func _build_country_names(map: Node2D) -> void:
 		var g: Dictionary = groups[cc]
 		var lo := Vector2(INF, INF)
 		var hi := Vector2(-INF, -INF)
+		# 视觉重心 = 全部省份多边形的面积加权质心（包围盒中心对横跨大陆的国家会跑偏）
+		var area_sum := 0.0
+		var centroid := Vector2.ZERO
 		for id in g["ids"]:
 			lo = lo.min(centers[id])
 			hi = hi.max(centers[id])
+			for ring in rings[id]:
+				var ra := _ring_area(ring)
+				area_sum += ra
+				centroid += _ring_centroid(ring) * ra
 		var w: float = hi.x - lo.x
 		if g["ids"].size() < 3 and w < 240.0:
 			continue
+		var anchor := (centroid / area_sum) if area_sum > 0.0 else (lo + hi) / 2.0
 		var chars: PackedStringArray = []
 		for ch in str(g["name"]):
 			chars.append(ch)
@@ -402,13 +410,27 @@ func _build_country_names(map: Node2D) -> void:
 		lab.add_theme_font_size_override("font_size", fs)
 		lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lab.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		lab.position = (lo + hi) / 2.0 + Vector2(-w / 2.0 - 40, -fs * 0.8)
+		lab.position = anchor + Vector2(-w / 2.0 - 40, -fs * 0.8)
 		lab.size = Vector2(w + 80, fs * 1.6)
 		lab.pivot_offset = lab.size / 2.0
 		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		lab.modulate.a = 0.55
 		map.add_child(lab)
 		big_labels.append(lab)
+
+## 多边形质心（标准公式）
+func _ring_centroid(ring: PackedVector2Array) -> Vector2:
+	var a := 0.0
+	var c := Vector2.ZERO
+	for i in range(ring.size()):
+		var p := ring[i]
+		var q := ring[(i + 1) % ring.size()]
+		var cross := p.x * q.y - q.x * p.y
+		a += cross
+		c += (p + q) * cross
+	if absf(a) < 0.001:
+		return ring[0]
+	return c / (3.0 * a)
 
 func _ring_area(ring: PackedVector2Array) -> float:
 	var a := 0.0
