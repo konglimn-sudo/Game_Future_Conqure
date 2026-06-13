@@ -166,6 +166,39 @@ func _init() -> void:
 		if s4.supplied(stage, 0):
 			fails.append("战争校验失败：飞地竟被判定为有补给")
 
+	# E. 行军指派 + 武力吞并中立（确定性合成场景）
+	var s5 := Sim.create("res://data/world.json", "res://data/params.json")
+	s5.set_seed(11)
+	var cap5 := -1
+	for r in s5.regions:
+		if r.get("capital", false):
+			cap5 = int(r["id"])
+	s5.region(cap5)["units"] = {"tank": 6, "inf": 6}
+	# 指派到河北（相邻），一回合应抵达
+	var hebei := -1
+	for n in s5.adj[str(cap5)]:
+		if s5.is_controlled(s5.region(int(n))):
+			hebei = int(n)
+			break
+	if s5.set_move_order(cap5, hebei) != true:
+		fails.append("机制校验失败：行军指派被拒")
+	s5.end_turn()
+	if s5.army_of(s5.region(hebei)) < 12:
+		fails.append("机制校验失败：行军未抵达（河北驻军 %d）" % s5.army_of(s5.region(hebei)))
+	# 武力吞并相邻中立
+	var tgt5 := -1
+	for n in s5.adj[str(hebei)]:
+		if s5.owner_of(s5.region(int(n))) == -1:
+			tgt5 = int(n)
+			break
+	if tgt5 >= 0:
+		if s5.do_attack(hebei, tgt5, 0) != true:
+			fails.append("机制校验失败：无法入侵中立国")
+		elif s5.owner_of(s5.region(tgt5)) != 0:
+			fails.append("机制校验失败：吞并后归属未转移")
+		elif int(s5.factions[0]["infamy"]) < 1:
+			fails.append("机制校验失败：吞并未记恶名")
+
 	print("\n==== 结果 ====")
 	print("代际 Gen%d | 控制 %d 区 | 科技 Lv%d | 电力墙:%s 数据短缺:%s" % [
 		sim.gen, sim.controlled().size(), sim.tech_level(),

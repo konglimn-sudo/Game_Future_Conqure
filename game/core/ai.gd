@@ -78,6 +78,34 @@ static func act(sim, fid: int) -> void:
 	_consider_war(sim, fid, p)
 	if sim.at_war_any(fid):
 		_wage_war(sim, fid)
+	elif float(p.get("aggression", 0.2)) >= 0.5 and sim.rng.randf() < float(p.get("aggression", 0.2)) * 0.04:
+		_invade_neutral(sim, fid)
+
+## 武力吞并：挑民兵最弱、价值最高的相邻中立国，且需局部压倒优势
+static func _invade_neutral(sim, fid: int) -> void:
+	var best_from := -1
+	var best_to := -1
+	var best_s := 0.0
+	for r in sim.controlled_of(fid):
+		var rid := int(r["id"])
+		if sim.army_of(r) <= 0:
+			continue
+		var my_p: float = sim.combat_power(fid, sim.army_of(r), sim.supplied(rid, fid))
+		for n in sim.adj[str(rid)]:
+			var ni := int(n)
+			var t: Dictionary = sim.region(ni)
+			if sim.owner_of(t) != -1 or sim.can_attack(rid, ni, fid) != "":
+				continue
+			var militia_p: float = sim.militia_of(t) * float(sim.P["defender_bonus"])
+			if my_p < 2.0 * militia_p:
+				continue
+			var s: float = (t["pop"] + t["energy"] + t["fab"] * 3.0 + 1.0) / (sim.militia_of(t) + 1.0)
+			if s > best_s:
+				best_s = s
+				best_from = rid
+				best_to = ni
+	if best_from >= 0:
+		sim.do_attack(best_from, best_to, fid)
 
 ## 宣战考量：要么有压倒性军力优势 + 性格侵略性掷骰，要么围攻被围堵的领跑者
 static func _consider_war(sim, fid: int, p: Dictionary) -> void:

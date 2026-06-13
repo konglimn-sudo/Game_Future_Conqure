@@ -23,6 +23,7 @@ var infiltrated_this_turn := {}   # "fid:rid" -> true
 var last_report := {}             # 玩家结算摘要
 var contained_fid := -1           # 当前被全球围堵的势力（-1 = 无）
 var wars := {}                    # "a:b"(a<b) -> {start, last_cap}
+var move_orders := {}             # "fid:rid" -> target_rid，跨月自动行军
 var terr_version := 0             # 领土版本号（补给缓存失效用）
 var _supply_cache := {}           # fid -> {ver, set}
 var rng := RandomNumberGenerator.new()
@@ -89,7 +90,7 @@ func _new_faction(key: String, name_: String, persona: Dictionary) -> Dictionary
 		"key": key, "name": name_, "persona": persona,
 		"chips": float(P["start_chips"]), "data_pool": float(P["start_data"]),
 		"train_pct": 0.34, "infer_pct": 0.33,
-		"training": 0.0, "gen": 1, "tech_points": 0.0, "last_supply": 1.0,
+		"training": 0.0, "gen": 1, "tech_points": 0.0, "last_supply": 1.0, "infamy": 0,
 		"capital_id": -1,
 	}
 
@@ -409,6 +410,81 @@ func combat_power(fid: int, armies: int, is_supplied: bool) -> float:
 		* (1.0 if is_supplied else float(P["unsupplied_factor"])) \
 		* (fl + (1.0 - fl) * float(factions[fid]["last_supply"]))
 
+## 中立国民兵：人口越多抵抗越强（吞并中立不再免费）
+func militia_of(r: Dictionary) -> int:
+	if owner_of(r) >= 0:
+		return 0
+	return 1 + int(ceil(int(r["pop"]) / 2.0))
+
+## 行军指派：部队每月沿己方领土自动行军一格，直至抵达目标控制区
+func can_set_move_order(from_id: int, target_id: int, fid: int = 0) -> String:
+	var a := region(from_id)
+	if not is_owned_by(a, fid):
+		return "出发地未控制"
+	if army_of(a) <= 0:
+		return "该区域没有军团"
+	if not is_owned_by(region(target_id), fid):
+		return "目标必须是己方控制区（边境省）"
+	if from_id == target_id:
+		return "原地"
+	return ""
+
+func set_move_order(from_id: int, target_id: int, fid: int = 0) -> bool:
+	if can_set_move_order(from_id, target_id, fid) != "":
+		return false
+	move_orders["%d:%d" % [fid, from_id]] = target_id
+	if fid == 0:
+		events.append("🛡 行军指派：〔%s〕→〔%s〕（每月推进一格）" %
+			[region(from_id)["name"], region(target_id)["name"]])
+	return true
+
+func order_target(from_id: int, fid: int = 0) -> int:
+	return int(move_orders.get("%d:%d" % [fid, from_id], -1))
+
+## 己方领土内 BFS 下一步
+func _next_step(from_id: int, target_id: int, fid: int) -> int:
+	var prev := {from_id: -1}
+	var queue := [from_id]
+	while not queue.is_empty():
+		var cur: int = queue.pop_front()
+		if cur == target_id:
+			var node := cur
+			while prev[node] != from_id and prev[node] != -1:
+				node = prev[node]
+			return node
+		for n in adj[str(cur)]:
+			var ni := int(n)
+			if not prev.has(ni) and is_owned_by(region(ni), fid):
+				prev[ni] = cur
+				queue.append(ni)
+	return -1
+
+func _process_move_orders() -> void:
+	for key in move_orders.keys():
+		var parts := (key as String).split(":")
+		var fid := int(parts[0])
+		var from_id := int(parts[1])
+		var target := int(move_orders[key])
+		if not is_owned_by(region(from_id), fid) or army_of(region(from_id)) <= 0 				or not is_owned_by(region(target), fid):
+			move_orders.erase(key)
+			continue
+		if from_id == target:
+			move_orders.erase(key)
+			continue
+		var nxt := _next_step(from_id, target, fid)
+		if nxt < 0:
+			if fid == 0:
+				events.append("🛡 行军中断：〔%s〕与目标之间没有连通的己方领土" % region(from_id)["name"])
+			move_orders.erase(key)
+			continue
+		if can_move_army(from_id, nxt, fid) == "":
+			do_move_army(from_id, nxt, fid)
+			move_orders.erase(key)
+			if nxt != target:
+				move_orders["%d:%d" % [fid, nxt]] = target
+			elif fid == 0:
+				events.append("🛡 部队抵达〔%s〕" % region(target)["name"])
+
 func can_attack(from_id: int, to_id: int, fid: int = 0) -> String:
 	var a := region(from_id)
 	if not is_owned_by(a, fid):
@@ -418,11 +494,9 @@ func can_attack(from_id: int, to_id: int, fid: int = 0) -> String:
 	if turn < int(a.get("acd", 0)):
 		return "占领区整编中（%d 月后可继续进攻）" % (int(a["acd"]) - turn)
 	var owner := owner_of(region(to_id))
-	if owner == -1:
-		return "中立国走渗透路线（军事入侵属敌对势力）"
 	if owner == fid:
 		return "目标是己方区域"
-	if not is_at_war(fid, owner):
+	if owner >= 0 and not is_at_war(fid, owner):
 		return "未与〔%s〕交战（先宣战）" % faction_name(owner)
 	if not (to_id in adj[str(from_id)].map(func(x): return int(x))):
 		return "不相邻"
@@ -437,13 +511,16 @@ func do_attack(from_id: int, to_id: int, fid: int = 0) -> bool:
 	var b := region(to_id)
 	var dfid := owner_of(b)
 	var att_n := army_of(a)
-	var def_n := army_of(b)
+	var def_n := army_of(b) if dfid >= 0 else militia_of(b)
 	var A := combat_power(fid, att_n, supplied(from_id, fid)) \
 		* stack_mult(units_of(a)) * rng.randf_range(0.9, 1.1)
 	var D := 0.0
-	if def_n > 0:
+	if dfid >= 0 and def_n > 0:
 		D = combat_power(dfid, def_n, supplied(to_id, dfid)) * stack_mult(units_of(b)) \
 			* float(P["defender_bonus"]) * rng.randf_range(0.9, 1.1)
+	elif dfid == -1:
+		# 中立民兵：无代际、无补给问题，仅守方加成
+		D = def_n * float(P["defender_bonus"]) * rng.randf_range(0.9, 1.1)
 	if D <= 0.001:
 		if not has_ground(units_of(a)):
 			events.append("⚔ 空中力量无法占领〔%s〕（需要地面单位进驻）" % b["name"])
@@ -457,8 +534,24 @@ func do_attack(from_id: int, to_id: int, fid: int = 0) -> bool:
 	var att_loss := clampi(int(round(att_n * D / (A + D) * float(P["attack_loss"]))), 0, att_n)
 	var def_loss := clampi(int(round(def_n * A / (A + D) * float(P["defend_loss"]))), 0, def_n)
 	_apply_losses(a["units"], att_loss)
-	_apply_losses(b["units"], def_loss)
+	if dfid >= 0:
+		_apply_losses(b["units"], def_loss)
 	var involves_player := fid == 0 or dfid == 0
+	if dfid == -1:
+		# 入侵中立国：打赢民兵即吞并，但背负国际恶名（计入反霸权威胁）
+		if A > D and army_of(a) > 0 and has_ground(units_of(a)):
+			_capture(b, fid, fid)
+			b["units"] = units_of(a)
+			a["units"] = {}
+			factions[fid]["infamy"] = int(factions[fid]["infamy"]) + 1
+			events.append("⚔ %s武力吞并中立国〔%s〕（战损 %d）——国际社会震动，恶名 +1" %
+				[_who(fid), b["name"], att_loss])
+			evo_marks.append({"id": int(b["id"]), "kind": "battle"})
+		else:
+			if involves_player:
+				events.append("⚔ 入侵〔%s〕受挫：民兵抵抗（战损 %d）" % [b["name"], att_loss])
+			evo_marks.append({"id": int(b["id"]), "kind": "battle"})
+		return true
 	if army_of(b) <= 0 and army_of(a) > 0 and has_ground(units_of(a)):
 		_capture(b, fid, dfid)
 		b["units"] = units_of(a)
@@ -508,7 +601,7 @@ func _update_containment() -> void:
 	var leader := -1
 	var leader_n := 0
 	for fid in range(factions.size()):
-		var n := controlled_of(fid).size()
+		var n := controlled_of(fid).size() + int(factions[fid]["infamy"]) * 2
 		if n > leader_n:
 			leader_n = n
 			leader = fid
@@ -520,7 +613,7 @@ func _update_containment() -> void:
 		var second_n := 0
 		for fid in range(factions.size()):
 			if fid != leader:
-				second_n = maxi(second_n, controlled_of(fid).size())
+				second_n = maxi(second_n, controlled_of(fid).size() + int(factions[fid]["infamy"]) * 2)
 		if leader_n >= int(ceil(second_n * float(P["threat_lead_ratio"]))):
 			threat = true
 		var best_other_gen := 1
@@ -731,6 +824,12 @@ func end_turn() -> void:
 	# 0. 反霸权态势与战争状态更新（AI 决策都依赖它们）
 	_update_containment()
 	_update_wars()
+	# 0a0. 行军指派推进
+	_process_move_orders()
+	# 0a1. 恶名随时间淡化（半年 -1）
+	if turn % 6 == 0:
+		for f in factions:
+			f["infamy"] = maxi(0, int(f["infamy"]) - 1)
 	# 0a. 玩家自动渗透队列
 	for id in auto_infiltrate.keys():
 		if can_infiltrate(int(id), 0) == "":
@@ -883,7 +982,7 @@ func save_state() -> Dictionary:
 		}
 	return {
 		"v": 2, "turn": turn, "factions": factions,
-		"auto": auto_infiltrate.keys(), "regions": mut,
+		"auto": auto_infiltrate.keys(), "orders": move_orders, "regions": mut,
 	}
 
 func load_state(d: Dictionary) -> void:
@@ -895,6 +994,9 @@ func load_state(d: Dictionary) -> void:
 	auto_infiltrate.clear()
 	for id in d.get("auto", []):
 		auto_infiltrate[int(id)] = true
+	move_orders = d.get("orders", {})
+	for k in move_orders.keys():
+		move_orders[k] = int(move_orders[k])
 	var mut: Dictionary = d["regions"]
 	for r in regions:
 		var m: Dictionary = mut.get(str(int(r["id"])), {})
