@@ -166,9 +166,15 @@ func _ready() -> void:
 	_set_map_mode(false)  # 默认经典纸图（M 切换卫星）
 	_update_tod_label()
 	_refresh()
-	# 截图模式：FC_SNAPSHOT=输出路径 时，等渲染稳定后截屏退出（README 配图用）
+	# 截图模式：FC_SNAPSHOT=输出路径（可选 FC_SNAPSHOT_ZOOM），等渲染稳定后截屏退出
 	var snap_path := OS.get_environment("FC_SNAPSHOT")
 	if snap_path != "":
+		var sz := OS.get_environment("FC_SNAPSHOT_ZOOM")
+		if sz != "":
+			cam.zoom = Vector2(float(sz), float(sz))
+			cam.position = centers.get(_capital_id(), Vector2.ZERO)
+			_apply_zoom_styles()
+			_update_label_visibility()
 		await get_tree().create_timer(2.5).timeout
 		get_viewport().get_texture().get_image().save_png(snap_path)
 		get_tree().quit()
@@ -181,6 +187,9 @@ func _ready() -> void:
 func _setup_font() -> void:
 	var f := SystemFont.new()
 	f.font_names = PackedStringArray(["PingFang SC", "Hiragino Sans GB", "Heiti SC", "Arial Unicode MS"])
+	# MSDF：距离场渲染，文字在任意缩放下保持矢量级锐利
+	f.multichannel_signed_distance_field = true
+	f.msdf_pixel_range = 8
 	ThemeDB.fallback_font = f
 
 func _capital_id() -> int:
@@ -521,7 +530,7 @@ func _build_terrain(map: Node2D) -> void:
 		map.add_child(ol)
 		ocean_labels.append(ol)
 
-func _circle(rad: float, n := 10) -> PackedVector2Array:
+func _circle(rad: float, n := 24) -> PackedVector2Array:
 	var pts := PackedVector2Array()
 	for i in range(n):
 		var a := TAU * i / n
