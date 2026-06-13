@@ -56,7 +56,9 @@ var btn := {}
 var labels := {}           # id -> 地图标签
 var label_score := {}      # id -> 显示权重（决定缩放显隐）
 var detail_labels := {}    # id -> 资源详情条（●⚡🔌🖥）
-var army_badges := {}      # id -> 军团徽章（红底常显）
+var army_badges := {}      # id -> 军团徽章（按势力着色）
+var badge_styles := {}     # fid -> StyleBoxFlat
+var big_labels: Array = [] # 大国名横铺层 {label, w}
 var city_nodes: Array = [] # {dot, label, tier, region}
 var border_lines: Array = []   # 省界细线
 var outline_lines: Array = []  # 国界粗线
@@ -98,12 +100,23 @@ var tod_accum := 0.0
 const DECL_BY_MONTH := [-21.0, -13.0, -2.0, 9.0, 19.0, 23.0, 21.0, 14.0, 3.0, -8.0, -18.0, -23.0]
 const DAY_CYCLE_SEC := 90.0    # 现实秒/一昼夜（纯演出层，与游戏速度无关）
 
-# 海洋水深配色：清屏色=大陆架浅蓝，越深越暗
+# 海洋水深配色（卫星/暗色模式）：清屏色=大陆架浅蓝，越深越暗
 const BATHY_COLORS := {
 	200: Color(0.075, 0.125, 0.19),
 	2000: Color(0.055, 0.095, 0.155),
 	5000: Color(0.04, 0.07, 0.118),
 }
+# 纸图模式：经典战争地图的浅蓝海与亮色块
+const BATHY_PAPER := {
+	200: Color(0.62, 0.72, 0.82),
+	2000: Color(0.55, 0.66, 0.78),
+	5000: Color(0.49, 0.60, 0.73),
+}
+const PAPER_OCEAN := Color(0.55, 0.66, 0.78)
+const PAPER_TEXT := Color(0.13, 0.14, 0.18)
+const PAPER_TEXT_SHADOW := Color(1, 1, 1, 0.4)
+const SAT_TEXT := Color(0.93, 0.96, 1.0)
+const SAT_TEXT_SHADOW := Color(0, 0, 0, 0.8)
 
 # 地貌配色（半透明叠加在政治底色之上）
 const TERRA_COLORS := {
@@ -150,7 +163,7 @@ func _ready() -> void:
 	_apply_zoom_styles()
 	_update_label_visibility()
 	_refresh_time_controls()
-	_set_map_mode(true)
+	_set_map_mode(false)  # 默认经典纸图（M 切换卫星）
 	_update_tod_label()
 	_refresh()
 	# 截图模式：FC_SNAPSHOT=输出路径 时，等渲染稳定后截屏退出（README 配图用）
@@ -197,18 +210,18 @@ func _build_map() -> void:
 	map.add_child(hd_layer)
 	hd2_layer = Node2D.new()
 	map.add_child(hd2_layer)
-	# 海洋水深分层（政治模式下的海色，垫在陆地之下）
+	# 海洋水深分层（纸图/暗色两套配色，垫在陆地之下）
 	for layer in _terrain_data().get("bathy", []):
-		var col: Color = BATHY_COLORS.get(int(layer["depth"]), Color(0.05, 0.09, 0.14))
+		var depth := int(layer["depth"])
 		for ring in layer["rings"]:
 			var pts := PackedVector2Array()
 			for p in ring:
 				pts.append(Vector2(p[0], p[1]))
 			var poly := Polygon2D.new()
 			poly.polygon = pts
-			poly.color = col
+			poly.color = BATHY_PAPER.get(depth, PAPER_OCEAN)
 			map.add_child(poly)
-			bathy_nodes.append(poly)
+			bathy_nodes.append({"poly": poly, "depth": depth})
 	# 区域多边形（含外环描边）
 	for r in sim.regions:
 		var id := int(r["id"])
@@ -334,11 +347,48 @@ func _build_map() -> void:
 		cl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		map.add_child(cl)
 		city_nodes.append({"dot": dot, "label": cl, "tier": int(c["tier"]), "region": int(c["region"])})
+	_build_country_names(map)
 	highlight = Line2D.new()
 	highlight.width = 2.6
 	highlight.default_color = Color(1.0, 0.85, 0.3)
 	highlight.visible = false
 	map.add_child(highlight)
+
+## 大国名横铺：多省国家的国名按领土跨度放大、拉开字距铺在版图上
+func _build_country_names(map: Node2D) -> void:
+	var groups := {}
+	for r in sim.regions:
+		var cc: String = str(r.get("key", "?")).split(":")[0]
+		if not groups.has(cc):
+			groups[cc] = {"ids": [], "name": ""}
+		groups[cc]["ids"].append(int(r["id"]))
+		groups[cc]["name"] = r["arch"] if ":" in str(r.get("key", "")) else r["name"]
+	for cc in groups:
+		var g: Dictionary = groups[cc]
+		var lo := Vector2(INF, INF)
+		var hi := Vector2(-INF, -INF)
+		for id in g["ids"]:
+			lo = lo.min(centers[id])
+			hi = hi.max(centers[id])
+		var w: float = hi.x - lo.x
+		if g["ids"].size() < 3 and w < 240.0:
+			continue
+		var chars: PackedStringArray = []
+		for ch in str(g["name"]):
+			chars.append(ch)
+		var lab := Label.new()
+		lab.text = "  ".join(chars)
+		var fs := clampi(int(w / maxi(chars.size(), 2) / 2.6), 16, 56)
+		lab.add_theme_font_size_override("font_size", fs)
+		lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lab.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		lab.position = (lo + hi) / 2.0 + Vector2(-w / 2.0 - 40, -fs * 0.8)
+		lab.size = Vector2(w + 80, fs * 1.6)
+		lab.pivot_offset = lab.size / 2.0
+		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lab.modulate.a = 0.55
+		map.add_child(lab)
+		big_labels.append(lab)
 
 func _ring_area(ring: PackedVector2Array) -> float:
 	var a := 0.0
@@ -478,11 +528,29 @@ func _circle(rad: float, n := 10) -> PackedVector2Array:
 		pts.append(Vector2(cos(a), sin(a)) * rad)
 	return pts
 
+## 势力着色的军团徽章底
+func _badge_style(fid: int) -> StyleBoxFlat:
+	var key := maxi(fid, -1)
+	if not badge_styles.has(key):
+		var sb := StyleBoxFlat.new()
+		var c: Color = FACTION_COLORS.get(key, Color(0.35, 0.35, 0.38))
+		sb.bg_color = Color(c.r * 0.75, c.g * 0.75, c.b * 0.75, 0.92)
+		sb.set_corner_radius_all(3)
+		sb.set_content_margin_all(1)
+		badge_styles[key] = sb
+	return badge_styles[key]
+
+func _is_capital(id: int) -> bool:
+	for f in sim.factions:
+		if int(f["capital_id"]) == id:
+			return true
+	return false
+
 func _region_caption(r: Dictionary) -> String:
 	var tags := ""
 	if int(r["fab"]) > 0: tags += " ▲%d" % int(r["fab"])
 	if int(r["launch"]) > 0: tags += " ☄"
-	return ("★" if r["capital"] else "") + r["name"] + tags
+	return ("★" if _is_capital(int(r["id"])) else "") + r["name"] + tags
 
 ## 资源详情条：人口/能源/电厂/数据中心（军团走独立徽章）
 func _detail_text(r: Dictionary) -> String:
@@ -551,10 +619,12 @@ func _map_color(r: Dictionary) -> Color:
 		var infl_any := owner >= 0 or not (r["inf"] as Dictionary).is_empty()
 		col.a = 0.52 if owner >= 0 else (0.38 if infl_any else 0.28)
 		return col
+	# 纸图模式：经典战争地图的明亮色块
+	col = col.lightened(0.22)
 	# 季节积雪：高纬区域冬季覆霜（控制区减弱以保辨识度）
 	var snow := _snow01(90.0 - centers[id].y / MAP_SCALE, sim.month_of_year())
 	if snow > 0.0:
-		col = col.lerp(Color(0.82, 0.86, 0.91), snow * (0.32 if owner >= 0 else 0.48))
+		col = col.lerp(Color(0.88, 0.91, 0.95), snow * (0.32 if owner >= 0 else 0.48))
 	return col
 
 # ---------------- UI ----------------
@@ -809,6 +879,10 @@ func _apply_zoom_styles() -> void:
 	for sl in sea_labels:
 		sl.scale = sv
 		sl.visible = z >= 0.7
+	# 大国名：远中景铺图，拉近让位给省名
+	for bl in big_labels:
+		bl.visible = z <= 2.2
+		bl.modulate.a = clampf(0.7 - z * 0.18, 0.18, 0.6)
 	_update_hd_tiles()
 
 func _pick(pos: Vector2) -> void:
@@ -892,14 +966,31 @@ func _on_action(kind: String) -> void:
 				_flush_events()
 	_refresh()
 
-## 卫星/政治图层切换
+## 卫星/纸图切换
 func _set_map_mode(sat: bool) -> void:
 	satellite_mode = sat
 	sat_sprite.visible = sat
-	for n in bathy_nodes: n.visible = not sat
+	for n in bathy_nodes:
+		n["poly"].visible = not sat
+		n["poly"].color = BATHY_PAPER.get(n["depth"], PAPER_OCEAN) if not sat \
+			else BATHY_COLORS.get(n["depth"], Color(0.05, 0.09, 0.14))
 	for tp in terra_polys: tp["poly"].visible = not sat
 	for mp in mountain_polys: mp["poly"].visible = not sat
 	for g in glacier_nodes: g.visible = not sat
+	# 文字图例：纸图深字浅影，卫星浅字深影
+	if daynight_mat:
+		daynight_mat.set_shader_parameter("strength", 1.0 if sat else 0.35)
+	var fc := SAT_TEXT if sat else PAPER_TEXT
+	var sc := SAT_TEXT_SHADOW if sat else PAPER_TEXT_SHADOW
+	for id in labels:
+		labels[id].add_theme_color_override("font_color", fc)
+		labels[id].add_theme_color_override("font_shadow_color", sc)
+		detail_labels[id].add_theme_color_override("font_color",
+			Color(0.82, 0.9, 0.97) if sat else Color(0.18, 0.22, 0.3))
+	for bl in big_labels:
+		bl.add_theme_color_override("font_color",
+			Color(0.95, 0.97, 1.0, 0.8) if sat else Color(0.16, 0.18, 0.26))
+		bl.add_theme_color_override("font_shadow_color", sc)
 	_apply_zoom_styles()  # 河流/湖泊的显隐由缩放级别细化
 	_refresh()
 
@@ -1121,13 +1212,14 @@ func _refresh() -> void:
 				suffix += " %d%%" % inf
 		labels[id].text = _region_caption(r) + suffix
 		detail_labels[id].text = _detail_text(r)
-		# 军团徽章：HOI4 式编成显示（⚙坦克 🪖装甲 🤖机器人 ✈战机 🛩无人机）；断补给标 ⛓
+		# 军团徽章：编成显示（⚙坦克 🪖装甲 🤖机器人 ✈战机 🛩无人机）；底色=所属势力；断补给标 ⛓
 		army_badges[id].visible = sim.army_of(r) > 0
 		if sim.army_of(r) > 0:
 			var o := sim.owner_of(r)
 			var chain := ""
 			if o >= 0 and not sim.supplied(id, o):
 				chain = " ⛓"
+			army_badges[id].add_theme_stylebox_override("normal", _badge_style(o))
 			army_badges[id].text = sim.units_str(r) + chain
 			# 徽章随编成变宽
 			var w := maxf(44.0, army_badges[id].text.length() * 7.5)
@@ -1177,9 +1269,13 @@ func _apply_season() -> void:
 		var s2 := _snow01(tp["lat"], m)
 		tp["poly"].color = tp["base"].lerp(Color(0.85, 0.88, 0.92, 0.3), s2)
 	var north := cos(float(m - 1) / 12.0 * TAU) * 0.5 + 0.5
-	# 清屏色 = 大陆架浅蓝（深海由水深分层覆盖），冬季微暗
-	RenderingServer.set_default_clear_color(
-		Color(0.10, 0.155, 0.225).lerp(Color(0.085, 0.13, 0.19), north))
+	# 清屏色 = 大陆架浅蓝（深海由水深分层覆盖），冬季微暗；纸图/卫星两套
+	if satellite_mode:
+		RenderingServer.set_default_clear_color(
+			Color(0.10, 0.155, 0.225).lerp(Color(0.085, 0.13, 0.19), north))
+	else:
+		RenderingServer.set_default_clear_color(
+			Color(0.66, 0.75, 0.84).lerp(Color(0.58, 0.68, 0.78), north))
 
 func _refresh_alloc() -> void:
 	lbl_alloc.text = "训练 %d%%  ｜  推理 %d%%  ｜  研发 %d%%（余量自动）" % [

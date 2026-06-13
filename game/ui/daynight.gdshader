@@ -3,6 +3,7 @@ shader_type canvas_item;
 
 uniform float sun_lon = 116.0;  // 太阳直射经度（此处为正午）
 uniform float decl = -21.0;     // 太阳赤纬（随月份变化，造成极昼极夜）
+uniform float strength = 1.0;   // 整体强度（纸图模式调低）
 
 varying vec2 wpos;
 const float MS = 7.0;           // 像素/度，与地图生成器一致
@@ -22,6 +23,6 @@ void fragment() {
 	float twil = smoothstep(0.16, 0.02, abs(cosz));    // 晨昏带
 	vec3 ncol = vec3(0.012, 0.02, 0.05);
 	vec3 dcol = vec3(0.95, 0.5, 0.18);
-	float a = night * 0.5 + twil * 0.10;
+	float a = (night * 0.5 + twil * 0.10) * strength;
 	COLOR = vec4(mix(ncol, dcol, twil * 0.55), clamp(a, 0.0, 0.6));
 }
