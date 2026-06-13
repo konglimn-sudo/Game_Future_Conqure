@@ -449,14 +449,16 @@ func _update_label_visibility() -> void:
 	elif z < 1.0:
 		need = 6.0
 	elif z < 1.5:
-		need = 3.5
+		need = 4.0
+	elif z < 2.2:
+		need = 2.5
 	for id in labels:
 		var r := sim.region(id)
 		var active: bool = not sim.is_controlled(r) \
 			and (sim.auto_infiltrate.has(id) or sim.influence_of(r, 0) > 0)
 		labels[id].visible = label_score[id] >= need or id == selected or active
 		# 详情条：拉近或选中时显示（军团有独立常显徽章）
-		detail_labels[id].visible = labels[id].visible and (z >= 0.8 or id == selected)
+		detail_labels[id].visible = labels[id].visible and (z >= 2.2 or id == selected)
 	# 城市：一级城市中景可见，二级城市近景可见
 	for c in city_nodes:
 		var t1: bool = c["tier"] == 1
@@ -582,7 +584,7 @@ var chip_styles := {}
 func _chip_style(sat: bool) -> StyleBoxFlat:
 	if not chip_styles.has(sat):
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.07, 0.09, 0.13, 0.72) if sat else Color(0.96, 0.97, 0.99, 0.72)
+		sb.bg_color = Color(0.07, 0.09, 0.13, 0.72) if sat else Color(0.96, 0.97, 0.99, 0.55)
 		sb.set_corner_radius_all(int(3 * FONT_K))
 		sb.set_content_margin_all(int(FONT_K))
 		chip_styles[sat] = sb
