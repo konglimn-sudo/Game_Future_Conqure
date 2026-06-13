@@ -845,7 +845,11 @@ func _zoom(f: float) -> void:
 	_apply_zoom_styles()
 	_update_label_visibility()
 
-## 缩放自适应：拉近时线变细、字不变大——矢量地图的观感关键
+## 文字缩放曲线：屏显尺寸 ≈ 基准 × zoom^0.55，夹在 [0.9×, cap×] 基准之间
+func _text_scale(z: float, cap: float) -> float:
+	return clampf(1.1 * pow(z, -0.45), 0.9 / z, cap / z)
+
+## 缩放自适应：拉近时线变细、字同步放大
 func _apply_zoom_styles() -> void:
 	var z := cam.zoom.x
 	for l in border_lines:
@@ -862,7 +866,8 @@ func _apply_zoom_styles() -> void:
 	for lp in lake_polys:
 		lp["poly"].visible = water_visible
 	highlight.width = clampf(3.0 / z, 0.22, 4.0)
-	var s := clampf(1.1 / z, 0.09, 1.3)
+	# 字体随缩放同步放大（次线性 + 上下限：拉近变大、拉远保底可读）
+	var s := _text_scale(z, 3.6)
 	var sv := Vector2(s, s)
 	for id in labels:
 		labels[id].scale = sv
@@ -1120,7 +1125,7 @@ func _refresh_time_controls() -> void:
 ## 演化事件在地图上的浮动标记
 func _spawn_evo_marks() -> void:
 	const ICONS := {"up": "📈", "down": "📉", "build": "🏗", "fab": "🏭", "flag": "🚩", "battle": "💥"}
-	var ms := clampf(1.1 / cam.zoom.x, 0.09, 1.3)
+	var ms := _text_scale(cam.zoom.x, 3.0)
 	for m in sim.evo_marks:
 		var lab := Label.new()
 		lab.text = ICONS.get(m["kind"], "✦")
