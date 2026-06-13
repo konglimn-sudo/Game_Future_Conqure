@@ -59,6 +59,9 @@ var detail_labels := {}    # id -> 资源详情条（●⚡🔌🖥）
 var army_badges := {}      # id -> 军团徽章（按势力着色）
 var badge_styles := {}     # fid -> StyleBoxFlat
 var big_labels: Array = [] # 大国名横铺层 {label, w}
+var front_layer: Node2D    # 战线渲染层
+var front_lines: Array = []
+var front_key := ""        # 战线缓存键（领土版本 + 战争集合）
 var city_nodes: Array = [] # {dot, label, tier, region}
 var border_lines: Array = []   # 省界细线
 var outline_lines: Array = []  # 国界粗线
@@ -146,6 +149,12 @@ var month_bar: ProgressBar
 func _ready() -> void:
 	_setup_font()
 	sim = Sim.create("res://data/world.json", "res://data/params.json")
+	if OS.get_environment("FC_TEST_WAR") != "":
+		for r in sim.regions:
+			if str(r.get("key", "")) in ["CHN:内蒙古", "CHN:黑龙江", "CHN:吉林", "CHN:新疆"]:
+				r["inf"] = {"0": 100}
+		sim.terr_version += 1
+		sim.declare_war(0, 2)
 	_build_map()
 	_build_ui()
 	var cap := _capital_id()
@@ -346,6 +355,8 @@ func _build_map() -> void:
 		cl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		map.add_child(cl)
 		city_nodes.append({"dot": dot, "label": cl, "tier": int(c["tier"]), "region": int(c["region"])})
+	front_layer = Node2D.new()
+	map.add_child(front_layer)
 	_build_country_names(map)
 	# 锐化所有地图文字：字号×K、盒子×K、围绕锚点缩回 1/K
 	var all_map_labels := []
@@ -939,6 +950,85 @@ func _crispify(lab: Label) -> void:
 	lab.add_theme_constant_override("shadow_offset_y", int(FONT_K))
 	lab.scale = Vector2(1.0 / FONT_K, 1.0 / FONT_K)
 
+## 战线渲染：交战双方领土接触段画红线（敌方多边形外扩 3px，己方边界点落入即接触）
+func _update_fronts() -> void:
+	var key := str(sim.terr_version) + "|" + str(sim.wars.keys())
+	if key == front_key:
+		return
+	front_key = key
+	for fl in front_lines:
+		fl.queue_free()
+	front_lines.clear()
+	if sim.wars.is_empty():
+		return
+	var inflated := {}  # rid -> Array[PackedVector2Array]
+	for war_k in sim.wars:
+		var parts := (war_k as String).split(":")
+		var fa := int(parts[0])
+		var fb := int(parts[1])
+		for ra in sim.controlled_of(fa):
+			var ra_id := int(ra["id"])
+			for n in sim.adj[str(ra_id)]:
+				var rb_id := int(n)
+				if not sim.is_owned_by(sim.region(rb_id), fb):
+					continue
+				if not inflated.has(rb_id):
+					var polys := []
+					for ring in rings[rb_id]:
+						polys.append_array(Geometry2D.offset_polygon(ring, 3.0))
+					inflated[rb_id] = polys
+				_emit_front_segments(ra_id, inflated[rb_id])
+
+## 取 A 区边界中落在外扩 B 区内的连续段
+func _emit_front_segments(ra_id: int, inflated_b: Array) -> void:
+	for ring_v in rings[ra_id]:
+		var ring: PackedVector2Array = ring_v
+		var n: int = ring.size()
+		if n < 3:
+			continue
+		var inside := PackedByteArray()
+		inside.resize(n)
+		var any := false
+		for i in range(n):
+			var hit := false
+			for poly in inflated_b:
+				if Geometry2D.is_point_in_polygon(ring[i], poly):
+					hit = true
+					break
+			inside[i] = 1 if hit else 0
+			any = any or hit
+		if not any:
+			continue
+		# 连续段切分（环形回绕：起始点旋到段外，避免断环）
+		var start: int = 0
+		while start < n and inside[start] == 1:
+			start += 1
+		if start == n:
+			start = 0  # 整环都是前线
+		var run := PackedVector2Array()
+		for k in range(n + 1):
+			var i: int = (start + k) % n
+			if inside[i] == 1:
+				run.append(ring[i])
+			elif run.size() > 0:
+				_add_front_line(run)
+				run = PackedVector2Array()
+		if run.size() > 0:
+			_add_front_line(run)
+
+func _add_front_line(pts: PackedVector2Array) -> void:
+	if pts.size() < 2:
+		return
+	var fl := Line2D.new()
+	fl.points = pts
+	fl.width = clampf(4.2 / cam.zoom.x, 0.4, 5.5) if cam else 4.2
+	fl.default_color = Color(0.86, 0.12, 0.10, 0.95)
+	fl.joint_mode = Line2D.LINE_JOINT_ROUND
+	fl.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	fl.end_cap_mode = Line2D.LINE_CAP_ROUND
+	front_layer.add_child(fl)
+	front_lines.append(fl)
+
 ## 缩放自适应：拉近时线变细、字同步放大
 func _apply_zoom_styles() -> void:
 	var z := cam.zoom.x
@@ -954,6 +1044,8 @@ func _apply_zoom_styles() -> void:
 	for lp in lake_polys:
 		lp["poly"].visible = water_visible
 	highlight.width = clampf(3.0 / z, 0.22, 4.0)
+	for fl in front_lines:
+		fl.width = clampf(4.2 / z, 0.4, 5.5)
 	# 字体随缩放同步放大（次线性 + 上下限：拉近变大、拉远保底可读）
 	var s := _text_scale(z, 3.6)
 	var sv := Vector2(s / FONT_K, s / FONT_K)
@@ -1332,6 +1424,7 @@ func _refresh() -> void:
 			army_badges[id].text = sim.units_str(r) + chain
 			_fit_chip(army_badges[id], centers[id] + Vector2(0.0, 29.0))
 	_apply_season()
+	_update_fronts()
 	var th := sim.next_gen_threshold()
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
 	var gen_txt := "Gen%d  %d/%s" % [sim.gen, int(sim.training), ("%d" % int(th)) if th > 0 else "MAX"]
