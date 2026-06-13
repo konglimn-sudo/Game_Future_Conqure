@@ -126,6 +126,7 @@ const TERRA_COLORS := {
 }
 
 const MAP_SCALE := 7.0         # 像素/经度°，与生成器一致
+const FONT_K := 3.0            # 地图文字按 3 倍字号光栅化再缩回，保证高倍缩放锐利
 const SEASON_ICON := ["❄", "❄", "🌱", "🌱", "🌱", "☀", "☀", "☀", "🍂", "🍂", "🍂", "❄"]
 var move_mode := false     # 军团调动：等待点击目的地
 var attack_mode := false   # 军团进攻：等待点击相邻敌区
@@ -307,11 +308,7 @@ func _build_map() -> void:
 		det.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		det.add_theme_font_size_override("font_size", 9)
 		det.add_theme_color_override("font_color", Color(0.82, 0.9, 0.97))
-		var chip := StyleBoxFlat.new()
-		chip.bg_color = Color(0.07, 0.09, 0.13, 0.72)
-		chip.set_corner_radius_all(3)
-		chip.set_content_margin_all(1)
-		det.add_theme_stylebox_override("normal", chip)
+		det.add_theme_stylebox_override("normal", _chip_style(true))
 		det.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		map.add_child(det)
 		detail_labels[id] = det
@@ -357,6 +354,20 @@ func _build_map() -> void:
 		map.add_child(cl)
 		city_nodes.append({"dot": dot, "label": cl, "tier": int(c["tier"]), "region": int(c["region"])})
 	_build_country_names(map)
+	# 锐化所有地图文字：字号×K、盒子×K、围绕锚点缩回 1/K
+	var all_map_labels := []
+	for id in labels:
+		all_map_labels.append(labels[id])
+		all_map_labels.append(detail_labels[id])
+		all_map_labels.append(army_badges[id])
+	for c in city_nodes:
+		all_map_labels.append(c["label"])
+	all_map_labels.append_array(range_labels)
+	all_map_labels.append_array(ocean_labels)
+	all_map_labels.append_array(sea_labels)
+	all_map_labels.append_array(big_labels)
+	for lab in all_map_labels:
+		_crispify(lab)
 	highlight = Line2D.new()
 	highlight.width = 2.6
 	highlight.default_color = Color(1.0, 0.85, 0.3)
@@ -537,6 +548,17 @@ func _circle(rad: float, n := 24) -> PackedVector2Array:
 		pts.append(Vector2(cos(a), sin(a)) * rad)
 	return pts
 
+var chip_styles := {}
+## 详情条芯片底：卫星=深底浅字，纸图=浅底深字
+func _chip_style(sat: bool) -> StyleBoxFlat:
+	if not chip_styles.has(sat):
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.07, 0.09, 0.13, 0.72) if sat else Color(0.96, 0.97, 0.99, 0.72)
+		sb.set_corner_radius_all(int(3 * FONT_K))
+		sb.set_content_margin_all(int(FONT_K))
+		chip_styles[sat] = sb
+	return chip_styles[sat]
+
 ## 势力着色的军团徽章底
 func _badge_style(fid: int) -> StyleBoxFlat:
 	var key := maxi(fid, -1)
@@ -544,8 +566,8 @@ func _badge_style(fid: int) -> StyleBoxFlat:
 		var sb := StyleBoxFlat.new()
 		var c: Color = FACTION_COLORS.get(key, Color(0.35, 0.35, 0.38))
 		sb.bg_color = Color(c.r * 0.75, c.g * 0.75, c.b * 0.75, 0.92)
-		sb.set_corner_radius_all(3)
-		sb.set_content_margin_all(1)
+		sb.set_corner_radius_all(int(3 * FONT_K))
+		sb.set_content_margin_all(int(FONT_K))
 		badge_styles[key] = sb
 	return badge_styles[key]
 
@@ -858,6 +880,19 @@ func _zoom(f: float) -> void:
 func _text_scale(z: float, cap: float) -> float:
 	return clampf(1.1 * pow(z, -0.45), 0.9 / z, cap / z)
 
+## 大字号光栅化：字号/盒子/阴影 ×K，围绕原锚点缩回——高倍缩放下文字依然锐利
+func _crispify(lab: Label) -> void:
+	var anchor: Vector2 = lab.position + lab.pivot_offset
+	for key in ["font_size", "normal_font_size"]:
+		if lab.has_theme_font_size_override(key):
+			lab.add_theme_font_size_override(key, int(lab.get_theme_font_size(key) * FONT_K))
+	lab.size *= FONT_K
+	lab.pivot_offset *= FONT_K
+	lab.position = anchor - lab.pivot_offset
+	lab.add_theme_constant_override("shadow_offset_x", int(FONT_K))
+	lab.add_theme_constant_override("shadow_offset_y", int(FONT_K))
+	lab.scale = Vector2(1.0 / FONT_K, 1.0 / FONT_K)
+
 ## 缩放自适应：拉近时线变细、字同步放大
 func _apply_zoom_styles() -> void:
 	var z := cam.zoom.x
@@ -877,7 +912,7 @@ func _apply_zoom_styles() -> void:
 	highlight.width = clampf(3.0 / z, 0.22, 4.0)
 	# 字体随缩放同步放大（次线性 + 上下限：拉近变大、拉远保底可读）
 	var s := _text_scale(z, 3.6)
-	var sv := Vector2(s, s)
+	var sv := Vector2(s / FONT_K, s / FONT_K)
 	for id in labels:
 		labels[id].scale = sv
 		detail_labels[id].scale = sv
@@ -1000,7 +1035,8 @@ func _set_map_mode(sat: bool) -> void:
 		labels[id].add_theme_color_override("font_color", fc)
 		labels[id].add_theme_color_override("font_shadow_color", sc)
 		detail_labels[id].add_theme_color_override("font_color",
-			Color(0.82, 0.9, 0.97) if sat else Color(0.18, 0.22, 0.3))
+			Color(0.82, 0.9, 0.97) if sat else Color(0.16, 0.19, 0.26))
+		detail_labels[id].add_theme_stylebox_override("normal", _chip_style(sat))
 	for bl in big_labels:
 		bl.add_theme_color_override("font_color",
 			Color(0.95, 0.97, 1.0, 0.8) if sat else Color(0.16, 0.18, 0.26))
@@ -1139,8 +1175,8 @@ func _spawn_evo_marks() -> void:
 		var lab := Label.new()
 		lab.text = ICONS.get(m["kind"], "✦")
 		lab.position = centers[int(m["id"])] + Vector2(-10, -26)
-		lab.scale = Vector2(ms, ms)
-		lab.add_theme_font_size_override("font_size", 18)
+		lab.scale = Vector2(ms / FONT_K, ms / FONT_K)
+		lab.add_theme_font_size_override("font_size", int(18 * FONT_K))
 		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		get_node("Map").add_child(lab)
 		var tw := create_tween()
@@ -1235,11 +1271,11 @@ func _refresh() -> void:
 				chain = " ⛓"
 			army_badges[id].add_theme_stylebox_override("normal", _badge_style(o))
 			army_badges[id].text = sim.units_str(r) + chain
-			# 徽章随编成变宽
-			var w := maxf(44.0, army_badges[id].text.length() * 7.5)
-			army_badges[id].size = Vector2(w, 15)
-			army_badges[id].position = centers[id] + Vector2(-w / 2.0, 22)
-			army_badges[id].pivot_offset = Vector2(w / 2.0, 7)
+			# 徽章随编成变宽（K 倍光栅化度量）
+			var w := maxf(44.0, army_badges[id].text.length() * 7.5) * FONT_K
+			army_badges[id].size = Vector2(w, 15 * FONT_K)
+			army_badges[id].pivot_offset = Vector2(w / 2.0, 7.5 * FONT_K)
+			army_badges[id].position = centers[id] + Vector2(0, 29) - army_badges[id].pivot_offset
 	_apply_season()
 	var th := sim.next_gen_threshold()
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
@@ -1278,7 +1314,8 @@ func _apply_season() -> void:
 		mp["poly"].color = Color(0.45, 0.36, 0.25, 0.15).lerp(Color(0.88, 0.91, 0.95, 0.32), snow)
 	for lp in lake_polys:
 		var ice := _snow01(lp["lat"] - 2.0, m)
-		lp["poly"].color = Color(0.055, 0.095, 0.155).lerp(Color(0.62, 0.72, 0.8), ice * 0.8)
+		var lake_base := Color(0.055, 0.095, 0.155) if satellite_mode else Color(0.45, 0.58, 0.72)
+		lp["poly"].color = lake_base.lerp(Color(0.78, 0.85, 0.9), ice * 0.8)
 	for tp in terra_polys:
 		var s2 := _snow01(tp["lat"], m)
 		tp["poly"].color = tp["base"].lerp(Color(0.85, 0.88, 0.92, 0.3), s2)
