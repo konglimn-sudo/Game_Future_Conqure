@@ -548,6 +548,13 @@ func _circle(rad: float, n := 24) -> PackedVector2Array:
 		pts.append(Vector2(cos(a), sin(a)) * rad)
 	return pts
 
+## 芯片随内容收缩：盒子=文字实测最小尺寸，围绕锚点居中
+func _fit_chip(lab: Label, anchor: Vector2) -> void:
+	var ms2: Vector2 = lab.get_minimum_size()
+	lab.size = ms2
+	lab.pivot_offset = ms2 / 2.0
+	lab.position = anchor - ms2 / 2.0
+
 var chip_styles := {}
 ## 详情条芯片底：卫星=深底浅字，纸图=浅底深字
 func _chip_style(sat: bool) -> StyleBoxFlat:
@@ -1261,7 +1268,9 @@ func _refresh() -> void:
 			if inf > 0:
 				suffix += " %d%%" % inf
 		labels[id].text = _region_caption(r) + suffix
-		detail_labels[id].text = _detail_text(r)
+		var dl: Label = detail_labels[id]
+		dl.text = _detail_text(r)
+		_fit_chip(dl, centers[id] + Vector2(0.0, 13.0))
 		# 军团徽章：编成显示（⚙坦克 🪖装甲 🤖机器人 ✈战机 🛩无人机）；底色=所属势力；断补给标 ⛓
 		army_badges[id].visible = sim.army_of(r) > 0
 		if sim.army_of(r) > 0:
@@ -1271,11 +1280,7 @@ func _refresh() -> void:
 				chain = " ⛓"
 			army_badges[id].add_theme_stylebox_override("normal", _badge_style(o))
 			army_badges[id].text = sim.units_str(r) + chain
-			# 徽章随编成变宽（K 倍光栅化度量）
-			var w := maxf(44.0, army_badges[id].text.length() * 7.5) * FONT_K
-			army_badges[id].size = Vector2(w, 15 * FONT_K)
-			army_badges[id].pivot_offset = Vector2(w / 2.0, 7.5 * FONT_K)
-			army_badges[id].position = centers[id] + Vector2(0, 29) - army_badges[id].pivot_offset
+			_fit_chip(army_badges[id], centers[id] + Vector2(0.0, 29.0))
 	_apply_season()
 	var th := sim.next_gen_threshold()
 	lbl_top["turn"].text = "📅 %s %s" % [sim.date_str(), SEASON_ICON[sim.month_of_year() - 1]]
