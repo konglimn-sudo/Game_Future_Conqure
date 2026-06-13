@@ -276,14 +276,6 @@ func _build_map() -> void:
 		ol.default_color = Color(0.02, 0.03, 0.05, 0.95)
 		map.add_child(ol)
 		outline_lines.append(ol)
-	# 跨洋航线
-	for pair in sim.sea_links:
-		var lane := Line2D.new()
-		lane.points = PackedVector2Array([centers[int(pair[0])], centers[int(pair[1])]])
-		lane.width = 2.0
-		lane.default_color = Color(0.45, 0.65, 0.95, 0.38)
-		map.add_child(lane)
-		lane_lines.append(lane)
 	# 标签（按区域重要度 + 缩放级别显隐）
 	for r in sim.regions:
 		var id := int(r["id"])
@@ -951,8 +943,6 @@ func _apply_zoom_styles() -> void:
 		l.width = clampf(1.5 / z, 0.1, 2.2)
 	for l in outline_lines:
 		l.width = clampf(3.4 / z, 0.25, 4.5)
-	for l in lane_lines:
-		l.width = clampf(2.2 / z, 0.18, 3.0)
 	# 卫星模式下，高倍缩放时叠回矢量河湖补偿影像分辨率极限
 	var water_visible := (not satellite_mode) or z > 3.0
 	for l in river_lines:
