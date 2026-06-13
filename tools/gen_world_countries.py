@@ -221,8 +221,17 @@ for a3 in SPLIT:
         for ring in rings_of(unary_union(parts).buffer(-0.15), MIN_RING_AREA):
             country_outlines.append(ring)
 
+# 国名锚点：国家联合几何的最大陆块（本土）质心——飞地不拽偏国名
+country_anchors = {}
+for cc, ids in country_ids.items():
+    union = unary_union([geoms[i] for i in ids])
+    main = max(only_polys(union), key=lambda p: p.area, default=None)
+    if main is not None:
+        c = main.centroid
+        country_anchors[cc] = list(to_px(c.x, c.y))
+
 out = {"map_kind": "poly", "regions": regions, "adjacency": adj, "sea_links": sea_links,
-       "country_outlines": country_outlines}
+       "country_outlines": country_outlines, "country_anchors": country_anchors}
 path = os.path.join(os.path.dirname(__file__), "..", "game", "data", "world.json")
 json.dump(out, open(path, "w", encoding="utf8"), ensure_ascii=False)
 

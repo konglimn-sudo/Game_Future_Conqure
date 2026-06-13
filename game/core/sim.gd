@@ -11,6 +11,7 @@ var adj: Dictionary = {}          # id -> [邻接 id]
 var sea_links: Array = []         # 跨洋航线
 var cities: Array = []            # 主要城市（表现层用）
 var country_outlines: Array = []  # 国界轮廓（表现层用）
+var country_anchors := {}         # 国名锚点：本土最大陆块质心（表现层用）
 
 ## 势力：factions[0] 恒为玩家
 var factions: Array = []
@@ -73,6 +74,7 @@ static func create(world_path: String, params_path: String) -> Sim:
 		s.adj[str(int(pair[1]))].append(int(pair[0]))
 	s.cities = w.get("cities", [])
 	s.country_outlines = w.get("country_outlines", [])
+	s.country_anchors = w.get("country_anchors", {})
 	s._init_factions(w)
 	s.rng.randomize()
 	return s

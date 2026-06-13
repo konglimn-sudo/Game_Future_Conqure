@@ -391,20 +391,27 @@ func _build_country_names(map: Node2D) -> void:
 		var g: Dictionary = groups[cc]
 		var lo := Vector2(INF, INF)
 		var hi := Vector2(-INF, -INF)
-		# 视觉重心 = 全部省份多边形的面积加权质心（包围盒中心对横跨大陆的国家会跑偏）
-		var area_sum := 0.0
-		var centroid := Vector2.ZERO
+		# 视觉重心 = 最大单一陆块（本土）的质心：
+		# 面积加权质心会被阿拉斯加/北极群岛这类大飞地拽偏，本土质心才是制图学惯例
+		var best_ring: PackedVector2Array
+		var best_a := 0.0
 		for id in g["ids"]:
 			lo = lo.min(centers[id])
 			hi = hi.max(centers[id])
 			for ring in rings[id]:
 				var ra := _ring_area(ring)
-				area_sum += ra
-				centroid += _ring_centroid(ring) * ra
+				if ra > best_a:
+					best_a = ra
+					best_ring = ring
 		var w: float = hi.x - lo.x
 		if g["ids"].size() < 3 and w < 240.0:
 			continue
-		var anchor := (centroid / area_sum) if area_sum > 0.0 else (lo + hi) / 2.0
+		# 优先用生成器算好的本土质心锚点（联合几何，飞地不拽偏）
+		var anchor: Vector2
+		if sim.country_anchors.has(cc):
+			anchor = Vector2(sim.country_anchors[cc][0], sim.country_anchors[cc][1])
+		else:
+			anchor = _ring_centroid(best_ring) if best_a > 0.0 else (lo + hi) / 2.0
 		var chars: PackedStringArray = []
 		for ch in str(g["name"]):
 			chars.append(ch)
